@@ -93,6 +93,7 @@ export const config = {
 
 /**
  * Generate a random delay within the specified range
+ * @param {Object} delayConfig - Object with min and max properties
  */
 export function randomDelay(delayConfig) {
     const { min, max } = delayConfig;
@@ -100,9 +101,15 @@ export function randomDelay(delayConfig) {
 }
 
 /**
- * Sleep for a random duration
+ * Sleep for a specified duration
+ * @param {number|Object} delayConfig - Either a number (ms) or an object with min/max properties
  */
 export async function sleep(delayConfig) {
-    const ms = randomDelay(delayConfig);
+    let ms;
+    if (typeof delayConfig === 'number') {
+        ms = delayConfig;
+    } else {
+        ms = randomDelay(delayConfig);
+    }
     return new Promise(resolve => setTimeout(resolve, ms));
 }

@@ -246,12 +246,12 @@ export async function extractPlanDetails(page) {
                 });
             }
 
-            // Deductibles
+            // Deductibles - find table by looking at caption h3 text content
             const deductibles = {};
-            const deductiblesCaption = document.querySelector('caption:has(h3:contains("Deductibles"))');
-            if (deductiblesCaption) {
-                const table = deductiblesCaption.closest('table');
-                if (table) {
+            const allTables = document.querySelectorAll('#overview table');
+            for (const table of allTables) {
+                const caption = table.querySelector('caption h3');
+                if (caption && caption.textContent.trim().toLowerCase().includes('deductibles')) {
                     const rows = table.querySelectorAll('tbody tr');
                     rows.forEach(row => {
                         const th = row.querySelector('th');
@@ -261,6 +261,7 @@ export async function extractPlanDetails(page) {
                             deductibles[key] = td.textContent.trim();
                         }
                     });
+                    break; // Found the deductibles table, stop searching
                 }
             }
 
@@ -414,7 +415,7 @@ export async function getTotalPlanInfo(page) {
         // Try to get the text from multiple possible selectors
         let totalText = null;
         const selectors = ['#total-plan-results', '#mct-sr-title', '.ds-u-visibility--screen-reader[aria-live="polite"]'];
-        
+
         for (const selector of selectors) {
             try {
                 totalText = await page.textContent(selector, { timeout: 5000 });
@@ -423,7 +424,7 @@ export async function getTotalPlanInfo(page) {
                 continue;
             }
         }
-        
+
         // Parse "Showing 10 of 58 Medicare Advantage Plans"
         if (totalText) {
             const showingMatch = totalText.match(/Showing\s+(\d+)\s+of\s+(\d+)/i);
@@ -433,7 +434,7 @@ export async function getTotalPlanInfo(page) {
                 const totalPages = Math.ceil(totalPlans / plansPerPage);
                 return { totalPlans, totalPages, plansPerPage };
             }
-            
+
             // Try simpler pattern
             const simpleMatch = totalText.match(/of\s+(\d+)/i);
             if (simpleMatch) {
@@ -441,7 +442,7 @@ export async function getTotalPlanInfo(page) {
                 return { totalPlans, totalPages: Math.ceil(totalPlans / 10), plansPerPage: 10 };
             }
         }
-        
+
         // Fallback: count plans on page
         const planCards = await page.$$('.SearchResults__plan-card, li.e2e-plan-card');
         return { totalPlans: planCards.length, totalPages: 1, plansPerPage: planCards.length };
