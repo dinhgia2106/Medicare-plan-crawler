@@ -81,14 +81,10 @@ function createRequests(zipcodes) {
  * Main function
  */
 async function main() {
-    console.log('');
-    console.log('╔' + '═'.repeat(58) + '╗');
-    console.log('║' + ' '.repeat(15) + '🏥 Medicare Plan Crawler' + ' '.repeat(18) + '║');
-    console.log('╠' + '═'.repeat(58) + '╣');
-    console.log('║  Version: 1.0.0' + ' '.repeat(41) + '║');
-    console.log('║  Started: ' + new Date().toLocaleString() + ' '.repeat(25 - new Date().toLocaleString().length + 11) + '║');
-    console.log('╚' + '═'.repeat(58) + '╝');
-    console.log('');
+    console.log('\n' + '='.repeat(60));
+    console.log('Medicare Plan Crawler');
+    console.log('Started: ' + new Date().toLocaleString());
+    console.log('='.repeat(60));
 
     const options = parseArgs();
 
@@ -135,14 +131,10 @@ async function main() {
     const endTime = Date.now();
     const duration = ((endTime - startTime) / 1000 / 60).toFixed(2);
 
-    console.log('');
-    console.log('╔' + '═'.repeat(58) + '╗');
-    console.log('║' + ' '.repeat(18) + '🎉 CRAWLING COMPLETE!' + ' '.repeat(19) + '║');
-    console.log('╠' + '═'.repeat(58) + '╣');
-    console.log(`║  ⏱️  Duration: ${duration} minutes` + ' '.repeat(Math.max(0, 41 - duration.length - 10)) + '║');
-    console.log(`║  📋 Total Plans Extracted: ${crawler.allResults?.length || 0}` + ' '.repeat(Math.max(0, 30 - String(crawler.allResults?.length || 0).length)) + '║');
-    console.log(`║  ❌ Errors: ${crawler.errors?.length || 0}` + ' '.repeat(Math.max(0, 44 - String(crawler.errors?.length || 0).length)) + '║');
-    console.log('╚' + '═'.repeat(58) + '╝');
+    console.log('\n' + '='.repeat(60));
+    console.log('CRAWLING COMPLETE');
+    console.log(`Duration: ${duration} min | Plans: ${crawler.allResults?.length || 0} | Errors: ${crawler.errors?.length || 0}`);
+    console.log('='.repeat(60));
 
     // Export results
     if (crawler.allResults && crawler.allResults.length > 0) {

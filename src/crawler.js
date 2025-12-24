@@ -335,7 +335,9 @@ async function extractAllPlans(page, zipcodeInfo) {
                     console.log(`     -> Opening details...`);
                     const currentUrl = page.url();
                     await page.goto(plan.detailsUrl, { waitUntil: 'domcontentloaded' });
-                    await sleep(1000); // Brief wait for JS to render
+                    // Wait for plan details content to render
+                    await page.waitForSelector('.PlanDetailsPagePlanInfo, .e2e-plan-details-page', { timeout: 15000 }).catch(() => {});
+                    await sleep(2000);
 
                     // Extract detailed information
                     const details = await extractPlanDetails(page);
@@ -356,7 +358,9 @@ async function extractAllPlans(page, zipcodeInfo) {
 
                     // Go back to plan list
                     await page.goto(currentUrl, { waitUntil: 'domcontentloaded' });
-                    await sleep(500);
+                    // Wait for plan cards to re-appear
+                    await page.waitForSelector(config.selectors.planCards, { timeout: 15000 }).catch(() => {});
+                    await sleep(2000);
                 } else {
                     // Fallback: click on plan card to view details
                     const planCards = await page.$$(config.selectors.planCards);
@@ -367,7 +371,8 @@ async function extractAllPlans(page, zipcodeInfo) {
                             console.log(`     -> Opening details (click)...`);
                             await detailsLink.click();
                             await page.waitForLoadState('domcontentloaded', { timeout: config.timeouts.navigation });
-                            await sleep(1000);
+                            await page.waitForSelector('.PlanDetailsPagePlanInfo, .e2e-plan-details-page', { timeout: 15000 }).catch(() => {});
+                            await sleep(2000);
 
                             const details = await extractPlanDetails(page);
                             console.log(`     <- Extracted ${Object.keys(details).filter(k => details[k] && k !== 'error').length} fields`);
@@ -385,7 +390,8 @@ async function extractAllPlans(page, zipcodeInfo) {
 
                             await page.goBack();
                             await page.waitForLoadState('domcontentloaded', { timeout: config.timeouts.navigation });
-                            await sleep(500);
+                            await page.waitForSelector(config.selectors.planCards, { timeout: 15000 }).catch(() => {});
+                            await sleep(2000);
                         } else {
                             console.log(`     [!] No details link, saving summary only`);
                             allPlans.push({
@@ -413,7 +419,8 @@ async function extractAllPlans(page, zipcodeInfo) {
         if (await hasNextPage(page)) {
             console.log(`\n>> Next page ${pageNum + 1}/${totalPages}`);
             await goToNextPage(page);
-            await sleep(1000);
+            await page.waitForSelector(config.selectors.planCards, { timeout: 15000 }).catch(() => {});
+            await sleep(2000);
             pageNum++;
         } else {
             console.log(`\nFinished all ${totalPages} page(s)`);

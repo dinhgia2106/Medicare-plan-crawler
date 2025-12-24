@@ -154,15 +154,7 @@ export async function extractPlanList(page) {
         });
 
         plans.push(...extractedPlans);
-        console.log(`\ud83d\udce5 Extracted ${plans.length} plans from current page`);
-        
-        // Log quick summary of plans found
-        if (plans.length > 0) {
-            console.log('   Plans found:');
-            plans.forEach((p, i) => {
-                console.log(`   ${i + 1}. ${p.planName || 'Unknown'} (${p.planId || 'N/A'}) - ${p.monthlyPremium || 'N/A'}`);
-            });
-        }
+        console.log(`Extracted ${plans.length} plans from page`);
 
     } catch (err) {
         console.error('Error extracting plan list:', err.message);
@@ -179,9 +171,8 @@ export async function extractPlanList(page) {
  */
 export async function extractPlanDetails(page) {
     try {
-        // Wait for the details page to load
-        await page.waitForLoadState('networkidle', { timeout: config.timeouts.navigation });
-        await page.waitForSelector('.PlanDetailsPagePlanInfo, .e2e-plan-details-page', { timeout: 30000 });
+        // Wait for the details page to load - use faster selector wait
+        await page.waitForSelector('.PlanDetailsPagePlanInfo, .e2e-plan-details-page', { timeout: 15000 });
 
         const details = await page.evaluate(() => {
             // Helper functions
@@ -392,7 +383,7 @@ export async function extractPlanDetails(page) {
 
         return details;
     } catch (err) {
-        console.error('\u274c Error extracting plan details:', err.message);
+        console.error('Error extracting plan details:', err.message);
         return { error: err.message };
     }
 }
@@ -492,7 +483,7 @@ export async function goToNextPage(page) {
         if (!nextButton) return false;
 
         await nextButton.click();
-        await page.waitForLoadState('networkidle', { timeout: config.timeouts.navigation });
+        await page.waitForLoadState('domcontentloaded', { timeout: config.timeouts.navigation });
 
         return true;
     } catch (err) {
