@@ -4,7 +4,7 @@
 
 import { PlaywrightCrawler, Dataset } from 'crawlee';
 import { config, sleep } from './config.js';
-import { extractPlanList, extractPlanDetails, hasNextPage, goToNextPage } from './extractors.js';
+import { extractPlanList, extractPlanDetails, hasNextPage, goToNextPage, getTotalPlanInfo } from './extractors.js';
 import { appendToJSON } from './exporters.js';
 
 /**
@@ -199,11 +199,10 @@ async function navigateWizard(page, zipcode) {
         console.log('Step 7: Looking for skip providers option...');
 
         const skipSelectors = [
-            'a:has-text("Skip")',
+            '[data-testid="continue-to-plans"]',  // Exact selector from HTML
+            'button:has-text("Skip Adding Providers")',
             'button:has-text("Skip")',
-            'a:has-text("Skip for now")',
-            'button:has-text("Skip for now")',
-            '[data-testid*="skip"]'
+            'a:has-text("Skip")'
         ];
 
         for (const selector of skipSelectors) {
@@ -306,62 +305,100 @@ async function extractAllPlans(page, zipcodeInfo) {
     const allPlans = [];
     let pageNum = 1;
 
+    // Get total plans count first
+    const { totalPlans, totalPages, plansPerPage } = await getTotalPlanInfo(page);
+    console.log('\n' + '='.repeat(60));
+    console.log(`PLAN SUMMARY FOR ZIPCODE: ${zipcodeInfo.zipcode}`);
+    console.log('='.repeat(60));
+    console.log(`Total Plans: ${totalPlans} | Pages: ${totalPages} | Per Page: ${plansPerPage}`);
+    console.log('='.repeat(60));
+
     do {
-        console.log(`\nExtracting plans from page ${pageNum}...`);
+        console.log(`\n--- PAGE ${pageNum}/${totalPages} ---`);
 
         // Get plan list from current page
         const planList = await extractPlanList(page);
-        console.log(`Found ${planList.length} plans on page ${pageNum}`);
+        const plansOnThisPage = planList.length;
+        const processedSoFar = allPlans.length;
+        console.log(`Found ${plansOnThisPage} plans`);
 
         // For each plan, get details
         for (let i = 0; i < planList.length; i++) {
             const plan = planList[i];
-            console.log(`  Processing plan ${i + 1}/${planList.length}: ${plan.planName || 'Unknown'}`);
+            const overallIndex = processedSoFar + i + 1;
+            
+            console.log(`\n  [${overallIndex}/${totalPlans}] ${plan.planName || 'Unknown'} (${plan.planId || 'N/A'})`);
 
             try {
-                // Click on plan to view details
-                const planCards = await page.$$(config.selectors.planCards);
-                if (planCards[i]) {
-                    // Find the details link/button within the card
-                    const detailsLink = await planCards[i].$('a:has-text("Details"), button:has-text("Details"), a:has-text("View")');
+                // Use detailsUrl from extracted data if available (more reliable)
+                if (plan.detailsUrl) {
+                    console.log(`     -> Opening details...`);
+                    const currentUrl = page.url();
+                    await page.goto(plan.detailsUrl, { waitUntil: 'domcontentloaded' });
+                    await sleep(1000); // Brief wait for JS to render
 
-                    if (detailsLink) {
-                        await detailsLink.click();
-                        await page.waitForLoadState('networkidle', { timeout: config.timeouts.navigation });
-                        await sleep(config.delays.afterPageLoad);
+                    // Extract detailed information
+                    const details = await extractPlanDetails(page);
+                    const extractedFields = Object.keys(details).filter(k => details[k] && k !== 'error' && k !== 'pageUrl');
+                    console.log(`     <- Extracted ${extractedFields.length} fields`);
 
-                        // Extract detailed information
-                        const details = await extractPlanDetails(page);
+                    // Combine summary and details
+                    const fullPlanData = {
+                        ...zipcodeInfo,
+                        ...plan,
+                        details,
+                        scrapedAt: new Date().toISOString()
+                    };
 
-                        // Combine summary and details
-                        const fullPlanData = {
-                            ...zipcodeInfo,
-                            ...plan,
-                            details,
-                            scrapedAt: new Date().toISOString()
-                        };
+                    allPlans.push(fullPlanData);
+                    await appendToJSON(fullPlanData);
+                    console.log(`     [SAVED ${allPlans.length}/${totalPlans}]`);
 
-                        allPlans.push(fullPlanData);
+                    // Go back to plan list
+                    await page.goto(currentUrl, { waitUntil: 'domcontentloaded' });
+                    await sleep(500);
+                } else {
+                    // Fallback: click on plan card to view details
+                    const planCards = await page.$$(config.selectors.planCards);
+                    if (planCards[i]) {
+                        const detailsLink = await planCards[i].$('.e2e-plan-details-btn, a[aria-label*="Plan details"]');
 
-                        // Save incrementally
-                        await appendToJSON(fullPlanData);
+                        if (detailsLink) {
+                            console.log(`     -> Opening details (click)...`);
+                            await detailsLink.click();
+                            await page.waitForLoadState('domcontentloaded', { timeout: config.timeouts.navigation });
+                            await sleep(1000);
 
-                        // Go back to plan list
-                        await page.goBack();
-                        await page.waitForLoadState('networkidle', { timeout: config.timeouts.navigation });
-                        await sleep(config.delays.betweenPlans);
-                    } else {
-                        // If no details link, just save summary
-                        allPlans.push({
-                            ...zipcodeInfo,
-                            ...plan,
-                            details: null,
-                            scrapedAt: new Date().toISOString()
-                        });
+                            const details = await extractPlanDetails(page);
+                            console.log(`     <- Extracted ${Object.keys(details).filter(k => details[k] && k !== 'error').length} fields`);
+
+                            const fullPlanData = {
+                                ...zipcodeInfo,
+                                ...plan,
+                                details,
+                                scrapedAt: new Date().toISOString()
+                            };
+
+                            allPlans.push(fullPlanData);
+                            await appendToJSON(fullPlanData);
+                            console.log(`     [SAVED ${allPlans.length}/${totalPlans}]`);
+
+                            await page.goBack();
+                            await page.waitForLoadState('domcontentloaded', { timeout: config.timeouts.navigation });
+                            await sleep(500);
+                        } else {
+                            console.log(`     [!] No details link, saving summary only`);
+                            allPlans.push({
+                                ...zipcodeInfo,
+                                ...plan,
+                                details: null,
+                                scrapedAt: new Date().toISOString()
+                            });
+                        }
                     }
                 }
             } catch (err) {
-                console.error(`    Error processing plan: ${err.message}`);
+                console.error(`     [ERROR] ${err.message}`);
                 allPlans.push({
                     ...zipcodeInfo,
                     ...plan,
@@ -374,15 +411,22 @@ async function extractAllPlans(page, zipcodeInfo) {
 
         // Check for next page
         if (await hasNextPage(page)) {
-            console.log('Going to next page...');
+            console.log(`\n>> Next page ${pageNum + 1}/${totalPages}`);
             await goToNextPage(page);
-            await sleep(config.delays.afterPageLoad);
+            await sleep(1000);
             pageNum++;
         } else {
+            console.log(`\nFinished all ${totalPages} page(s)`);
             break;
         }
 
     } while (true);
+
+    // Final summary
+    console.log('\n' + '='.repeat(60));
+    console.log(`CRAWL COMPLETE: ${zipcodeInfo.zipcode}`);
+    console.log(`Plans: ${allPlans.length} | Pages: ${pageNum} | Success: ${allPlans.filter(p => !p.error).length}/${allPlans.length}`);
+    console.log('='.repeat(60) + '\n');
 
     return allPlans;
 }
