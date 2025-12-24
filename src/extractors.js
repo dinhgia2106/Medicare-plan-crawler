@@ -231,38 +231,73 @@ export async function extractPlanDetails(page) {
                 });
             }
 
-            // Overview Section - Premiums
-            const premiums = {};
-            const premiumsTable = document.querySelector('#overview table');
-            if (premiumsTable) {
-                const rows = premiumsTable.querySelectorAll('tbody tr');
-                rows.forEach(row => {
-                    const th = row.querySelector('th');
-                    const td = row.querySelector('td');
-                    if (th && td) {
-                        const key = th.textContent.trim().split('\n')[0].toLowerCase().replace(/\s+/g, '_');
-                        premiums[key] = td.textContent.trim();
-                    }
+            // Helper function to get text with <br> converted to \n
+            const getTextWithLineBreaks = (element) => {
+                if (!element) return null;
+                // Clone the element to avoid modifying the DOM
+                const clone = element.cloneNode(true);
+                // Replace <br> tags with newline markers
+                clone.querySelectorAll('br').forEach(br => {
+                    br.replaceWith('\n');
                 });
-            }
+                // Get text and clean up
+                return clone.textContent.trim().replace(/\n\s+/g, '\n');
+            };
 
-            // Deductibles - find table by looking at caption h3 text content
+            // Overview Section - Parse all tables by their caption titles
+            const overviewSection = document.querySelector('#overview');
+            const premiums = {};
             const deductibles = {};
-            const allTables = document.querySelectorAll('#overview table');
-            for (const table of allTables) {
-                const caption = table.querySelector('caption h3');
-                if (caption && caption.textContent.trim().toLowerCase().includes('deductibles')) {
+            const maximumYouPay = {};
+            const contactInformation = {};
+
+            if (overviewSection) {
+                const allTables = overviewSection.querySelectorAll('table');
+
+                allTables.forEach(table => {
+                    const captionH3 = table.querySelector('caption h3');
+                    const captionTitle = captionH3 ? captionH3.textContent.trim().toLowerCase() : '';
+
                     const rows = table.querySelectorAll('tbody tr');
+
                     rows.forEach(row => {
                         const th = row.querySelector('th');
                         const td = row.querySelector('td');
                         if (th && td) {
-                            const key = th.textContent.trim().toLowerCase().replace(/\s+/g, '_');
-                            deductibles[key] = td.textContent.trim();
+                            // Get key from th - handle different structures
+                            let keyText = '';
+
+                            // First, try to get text from collapsible trigger label (for Maximum section)
+                            const triggerLabel = th.querySelector('.mct-c-collapsible__trigger-label');
+                            if (triggerLabel) {
+                                keyText = triggerLabel.textContent.trim();
+                            } else {
+                                // Otherwise, clone and remove unwanted elements
+                                const thClone = th.cloneNode(true);
+                                // Remove button elements (help drawers) but NOT collapsible triggers
+                                thClone.querySelectorAll('.ds-c-help-drawer__toggle').forEach(btn => btn.remove());
+                                thClone.querySelectorAll('.mct-c-collapsible__contentOuter').forEach(el => el.remove());
+                                keyText = thClone.textContent.trim().split('\n')[0].trim();
+                            }
+
+                            const key = keyText.toLowerCase().replace(/[?']/g, '').replace(/\s+/g, '_');
+
+                            // Get value with line breaks preserved
+                            const value = getTextWithLineBreaks(td);
+
+                            // Assign to appropriate object based on caption title
+                            if (captionTitle.includes('premium')) {
+                                premiums[key] = value;
+                            } else if (captionTitle.includes('deductible')) {
+                                deductibles[key] = value;
+                            } else if (captionTitle.includes('maximum')) {
+                                maximumYouPay[key] = value;
+                            } else if (captionTitle.includes('contact')) {
+                                contactInformation[key] = value;
+                            }
                         }
                     });
-                    break; // Found the deductibles table, stop searching
-                }
+                });
             }
 
             // Benefits & Costs section
@@ -362,8 +397,14 @@ export async function extractPlanDetails(page) {
 
                 // Costs Summary
                 whatYouPay,
-                premiums,
-                deductibles,
+
+                // Overview Section (contains Premiums, Deductibles, Maximum You Pay, Contact Info)
+                overview: {
+                    premiums,
+                    deductibles,
+                    maximumYouPay,
+                    contactInformation
+                },
 
                 // Benefits & Costs
                 benefitsCosts,

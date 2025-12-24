@@ -335,7 +335,7 @@ async function extractAllPlans(page, zipcodeInfo) {
                 break;
             }
             await page.waitForSelector(config.selectors.planCards, { timeout: 15000 }).catch(() => { });
-            await sleep(2000);
+            await sleep(1000);
         }
 
         // Extract plan list from current page
@@ -385,7 +385,7 @@ async function extractAllPlans(page, zipcodeInfo) {
                 console.log(`     -> Opening details...`);
                 await page.goto(plan.detailsUrl, { waitUntil: 'domcontentloaded' });
                 await page.waitForSelector('.PlanDetailsPagePlanInfo, .e2e-plan-details-page', { timeout: 15000 }).catch(() => { });
-                await sleep(1500);
+                await sleep(1000);
 
                 // Extract detailed information
                 const details = await extractPlanDetails(page);
