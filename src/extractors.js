@@ -398,11 +398,16 @@ export async function extractPlanDetails(page) {
                         const rows = table.querySelectorAll('tbody tr');
                         rows.forEach(row => {
                             const th = row.querySelector('th');
-                            const td = row.querySelector('td .mct-c-benefit') || row.querySelector('td');
+                            const tds = row.querySelectorAll('td');
                             if (th) {
+                                // First td is coverage, second td (if exists) is limits
+                                const coverageTd = tds[0] ? (tds[0].querySelector('.mct-c-benefit') || tds[0]) : null;
+                                const limitsTd = tds[1] || null;
+
                                 extraBenefits[sectionName].push({
                                     benefit: getTextWithLineBreaks(th),
-                                    coverage: td ? getTextWithLineBreaks(td) : 'Not covered'
+                                    coverage: coverageTd ? getTextWithLineBreaks(coverageTd) : 'Not covered',
+                                    limits: limitsTd ? getTextWithLineBreaks(limitsTd) : null
                                 });
                             }
                         });
