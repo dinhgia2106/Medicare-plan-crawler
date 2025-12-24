@@ -6,7 +6,10 @@
   "type": "module",
   "scripts": {
     "start": "node src/main.js",
-    "test": "node src/main.js --test --zipcode 63101"
+    "test": "node src/main.js --test --zipcode 63101",
+    "parallel": "node src/parallel.js",
+    "parallel:10": "node src/parallel.js --workers 10 --limit 10",
+    "parallel:bg": "nohup node src/parallel.js > output/parallel.log 2>&1 &"
   },
   "dependencies": {
     "crawlee": "^3.11.0",

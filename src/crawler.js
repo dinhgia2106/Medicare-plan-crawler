@@ -36,6 +36,46 @@ async function navigateWizard(page, zipcode) {
         console.log(`  Entered zipcode: ${zipcode}`);
         await sleep(config.delays.betweenActions);
 
+        // Step 1.5: Check if county selection is required
+        console.log('Step 1.5: Checking for county selection...');
+        await sleep(1000); // Wait for county options to appear
+        
+        const countySelectors = [
+            'input[name="county"][type="radio"]',
+            '[data-testid*="coverage-selector-fips"]',
+            '.mct-c-coverage-selector-v2__county-choice input[type="radio"]'
+        ];
+
+        for (const selector of countySelectors) {
+            try {
+                const countyOptions = await page.$$(selector);
+                if (countyOptions.length > 0) {
+                    // Check if any is already selected
+                    let alreadySelected = false;
+                    for (const option of countyOptions) {
+                        const isChecked = await option.isChecked();
+                        if (isChecked) {
+                            alreadySelected = true;
+                            console.log('  County already selected');
+                            break;
+                        }
+                    }
+                    
+                    // If none selected, select the first one
+                    if (!alreadySelected) {
+                        const firstOption = countyOptions[0];
+                        await firstOption.click();
+                        console.log(`  Selected first county option (${countyOptions.length} options available)`);
+                    }
+                    break;
+                }
+            } catch (e) {
+                continue;
+            }
+        }
+
+        await sleep(config.delays.betweenActions);
+
         // Step 2: Click first Continue to go to plan type selection
         console.log('Step 2: Clicking Continue to see plan types...');
         await clickContinueButton(page);
