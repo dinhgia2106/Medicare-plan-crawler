@@ -297,13 +297,17 @@ async function clickButton(page, textOptions) {
 
 /**
  * Extract all plans for a given zipcode
+ * Uses two-phase approach:
+ * Phase 1: Collect all plan summaries and URLs by navigating through all pages
+ * Phase 2: Visit each plan URL to extract detailed information
  * @param {import('playwright').Page} page - Playwright page object
  * @param {Object} zipcodeInfo - Zipcode information
  * @returns {Promise<Array>} Array of plan data
  */
 async function extractAllPlans(page, zipcodeInfo) {
     const allPlans = [];
-    const processedPlanIds = new Set(); // Track plan IDs to avoid duplicates
+    const planSummaries = []; // Collect all plan summaries first
+    const processedPlanIds = new Set();
     let pageNum = 1;
 
     // Get total plans count first
@@ -314,170 +318,171 @@ async function extractAllPlans(page, zipcodeInfo) {
     console.log(`Total Plans: ${totalPlans} | Pages: ${totalPages} | Per Page: ${plansPerPage}`);
     console.log('='.repeat(60));
 
-    // Maximum pages to prevent infinite loops
-    const maxPages = Math.max(totalPages, 10);
+    // ============================================
+    // PHASE 1: Collect all plan summaries and URLs
+    // ============================================
+    console.log('\n>>> PHASE 1: Collecting plan URLs from all pages...');
 
-    do {
-        console.log(`\n--- PAGE ${pageNum}/${totalPages} ---`);
+    for (let p = 1; p <= totalPages; p++) {
+        console.log(`\n  [Page ${p}/${totalPages}]`);
 
-        // Get plan list from current page
-        const planList = await extractPlanList(page);
-        const plansOnThisPage = planList.length;
-        console.log(`Found ${plansOnThisPage} plans`);
-
-        // Track how many new plans we find on this page
-        let newPlansOnPage = 0;
-
-        // For each plan, get details
-        for (let i = 0; i < planList.length; i++) {
-            const plan = planList[i];
-            const planId = plan.planId || `unknown-${Date.now()}-${i}`;
-
-            // Skip if already processed
-            if (processedPlanIds.has(planId)) {
-                console.log(`\n  [SKIP] ${plan.planName || 'Unknown'} (${planId}) - already processed`);
-                continue;
+        // Navigate to page if not the first one
+        if (p > 1) {
+            // Click pagination button for this page number
+            const pageButtonClicked = await clickPaginationButton(page, p);
+            if (!pageButtonClicked) {
+                console.log(`  [WARN] Could not navigate to page ${p}, stopping collection`);
+                break;
             }
+            await page.waitForSelector(config.selectors.planCards, { timeout: 15000 }).catch(() => { });
+            await sleep(2000);
+        }
 
-            processedPlanIds.add(planId);
-            newPlansOnPage++;
-            const overallIndex = allPlans.length + 1;
+        // Extract plan list from current page
+        const planList = await extractPlanList(page);
+        console.log(`  Found ${planList.length} plans`);
 
-            console.log(`\n  [${overallIndex}/${totalPlans}] ${plan.planName || 'Unknown'} (${planId})`);
+        // Add unique plans to our collection
+        let newOnThisPage = 0;
+        for (const plan of planList) {
+            const planId = plan.planId || `unknown-${p}-${planList.indexOf(plan)}`;
+            if (!processedPlanIds.has(planId)) {
+                processedPlanIds.add(planId);
+                planSummaries.push(plan);
+                newOnThisPage++;
+            }
+        }
+        console.log(`  Added ${newOnThisPage} new plans (Total: ${planSummaries.length}/${totalPlans})`);
 
-            try {
-                // Use detailsUrl from extracted data if available (more reliable)
-                if (plan.detailsUrl) {
-                    console.log(`     -> Opening details...`);
-                    const currentUrl = page.url();
-                    await page.goto(plan.detailsUrl, { waitUntil: 'domcontentloaded' });
-                    // Wait for plan details content to render
-                    await page.waitForSelector('.PlanDetailsPagePlanInfo, .e2e-plan-details-page', { timeout: 15000 }).catch(() => { });
-                    await sleep(2000);
+        // Stop if we have all plans
+        if (planSummaries.length >= totalPlans) {
+            console.log(`  Collected all ${totalPlans} plans`);
+            break;
+        }
 
-                    // Extract detailed information
-                    const details = await extractPlanDetails(page);
-                    const extractedFields = Object.keys(details).filter(k => details[k] && k !== 'error' && k !== 'pageUrl');
-                    console.log(`     <- Extracted ${extractedFields.length} fields`);
+        // Stop if no new plans found (loop detected)
+        if (newOnThisPage === 0) {
+            console.log(`  [WARN] No new plans on page ${p}, stopping collection`);
+            break;
+        }
+    }
 
-                    // Combine summary and details
-                    const fullPlanData = {
-                        ...zipcodeInfo,
-                        ...plan,
-                        details,
-                        scrapedAt: new Date().toISOString()
-                    };
+    console.log(`\n>>> Phase 1 complete: Collected ${planSummaries.length} unique plans\n`);
 
-                    allPlans.push(fullPlanData);
-                    await appendToJSON(fullPlanData);
-                    console.log(`     [SAVED ${allPlans.length}/${totalPlans}]`);
+    // ============================================
+    // PHASE 2: Visit each plan URL to get details
+    // ============================================
+    console.log('>>> PHASE 2: Extracting details for each plan...\n');
 
-                    // Go back to plan list
-                    await page.goto(currentUrl, { waitUntil: 'domcontentloaded' });
-                    // Wait for plan cards to re-appear
-                    await page.waitForSelector(config.selectors.planCards, { timeout: 15000 }).catch(() => { });
-                    await sleep(2000);
-                } else {
-                    // Fallback: click on plan card to view details
-                    const planCards = await page.$$(config.selectors.planCards);
-                    if (planCards[i]) {
-                        const detailsLink = await planCards[i].$('.e2e-plan-details-btn, a[aria-label*="Plan details"]');
+    for (let i = 0; i < planSummaries.length; i++) {
+        const plan = planSummaries[i];
+        const planId = plan.planId || 'N/A';
 
-                        if (detailsLink) {
-                            console.log(`     -> Opening details (click)...`);
-                            await detailsLink.click();
-                            await page.waitForLoadState('domcontentloaded', { timeout: config.timeouts.navigation });
-                            await page.waitForSelector('.PlanDetailsPagePlanInfo, .e2e-plan-details-page', { timeout: 15000 }).catch(() => { });
-                            await sleep(2000);
+        console.log(`  [${i + 1}/${planSummaries.length}] ${plan.planName || 'Unknown'} (${planId})`);
 
-                            const details = await extractPlanDetails(page);
-                            console.log(`     <- Extracted ${Object.keys(details).filter(k => details[k] && k !== 'error').length} fields`);
+        try {
+            if (plan.detailsUrl) {
+                console.log(`     -> Opening details...`);
+                await page.goto(plan.detailsUrl, { waitUntil: 'domcontentloaded' });
+                await page.waitForSelector('.PlanDetailsPagePlanInfo, .e2e-plan-details-page', { timeout: 15000 }).catch(() => { });
+                await sleep(1500);
 
-                            const fullPlanData = {
-                                ...zipcodeInfo,
-                                ...plan,
-                                details,
-                                scrapedAt: new Date().toISOString()
-                            };
+                // Extract detailed information
+                const details = await extractPlanDetails(page);
+                const extractedFields = Object.keys(details).filter(k => details[k] && k !== 'error' && k !== 'pageUrl');
+                console.log(`     <- Extracted ${extractedFields.length} fields`);
 
-                            allPlans.push(fullPlanData);
-                            await appendToJSON(fullPlanData);
-                            console.log(`     [SAVED ${allPlans.length}/${totalPlans}]`);
+                // Combine summary and details
+                const fullPlanData = {
+                    ...zipcodeInfo,
+                    ...plan,
+                    details,
+                    scrapedAt: new Date().toISOString()
+                };
 
-                            await page.goBack();
-                            await page.waitForLoadState('domcontentloaded', { timeout: config.timeouts.navigation });
-                            await page.waitForSelector(config.selectors.planCards, { timeout: 15000 }).catch(() => { });
-                            await sleep(2000);
-                        } else {
-                            console.log(`     [!] No details link, saving summary only`);
-                            allPlans.push({
-                                ...zipcodeInfo,
-                                ...plan,
-                                details: null,
-                                scrapedAt: new Date().toISOString()
-                            });
-                        }
-                    }
-                }
-            } catch (err) {
-                console.error(`     [ERROR] ${err.message}`);
+                allPlans.push(fullPlanData);
+                await appendToJSON(fullPlanData);
+                console.log(`     [SAVED ${allPlans.length}/${planSummaries.length}]`);
+            } else {
+                console.log(`     [!] No details URL, saving summary only`);
                 allPlans.push({
                     ...zipcodeInfo,
                     ...plan,
                     details: null,
-                    error: err.message,
                     scrapedAt: new Date().toISOString()
                 });
             }
-
-            // Stop if we've reached the expected total
-            if (allPlans.length >= totalPlans) {
-                console.log(`\n[INFO] Reached expected total of ${totalPlans} plans`);
-                break;
-            }
+        } catch (err) {
+            console.error(`     [ERROR] ${err.message}`);
+            allPlans.push({
+                ...zipcodeInfo,
+                ...plan,
+                details: null,
+                error: err.message,
+                scrapedAt: new Date().toISOString()
+            });
         }
-
-        // Stop if we've reached the expected total
-        if (allPlans.length >= totalPlans) {
-            console.log(`\nCompleted: collected ${allPlans.length}/${totalPlans} plans`);
-            break;
-        }
-
-        // Stop if all plans on this page were duplicates (pagination loop detected)
-        if (newPlansOnPage === 0) {
-            console.log(`\n[WARN] All ${plansOnThisPage} plans on this page were duplicates - stopping pagination`);
-            break;
-        }
-
-        // Stop if we've exceeded max pages
-        if (pageNum >= maxPages) {
-            console.log(`\n[WARN] Reached maximum page limit (${maxPages}) - stopping`);
-            break;
-        }
-
-        // Check for next page - use direct URL navigation instead of clicking next button
-        if (pageNum < totalPages) {
-            const nextPage = pageNum + 1;
-            console.log(`\n>> Navigating to page ${nextPage}/${totalPages}`);
-            await goToPage(page, nextPage);
-            await page.waitForSelector(config.selectors.planCards, { timeout: 15000 }).catch(() => { });
-            await sleep(2000);
-            pageNum++;
-        } else {
-            console.log(`\nFinished all ${totalPages} page(s)`);
-            break;
-        }
-
-    } while (true);
+    }
 
     // Final summary
     console.log('\n' + '='.repeat(60));
     console.log(`CRAWL COMPLETE: ${zipcodeInfo.zipcode}`);
-    console.log(`Plans: ${allPlans.length} | Unique IDs: ${processedPlanIds.size} | Pages: ${pageNum}`);
+    console.log(`Plans: ${allPlans.length} | Unique IDs: ${processedPlanIds.size}`);
     console.log(`Success: ${allPlans.filter(p => !p.error).length}/${allPlans.length}`);
     console.log('='.repeat(60) + '\n');
 
     return allPlans;
+}
+
+/**
+ * Click on a specific page number in pagination
+ * @param {import('playwright').Page} page - Playwright page object
+ * @param {number} targetPage - Page number to click
+ * @returns {Promise<boolean>} True if successful
+ */
+async function clickPaginationButton(page, targetPage) {
+    try {
+        // Try to find and click pagination button with specific page number
+        const selectors = [
+            `button[aria-label*="Page ${targetPage}"]`,
+            `a[aria-label*="Page ${targetPage}"]`,
+            `.ds-c-pagination__item button:has-text("${targetPage}")`,
+            `[data-testid="pagination-page-${targetPage}"]`,
+            `.Pagination button:has-text("${targetPage}")`
+        ];
+
+        for (const selector of selectors) {
+            try {
+                const button = await page.$(selector);
+                if (button) {
+                    const isVisible = await button.isVisible();
+                    if (isVisible) {
+                        await button.click();
+                        await page.waitForLoadState('domcontentloaded', { timeout: config.timeouts.navigation });
+                        console.log(`  Clicked page ${targetPage} button`);
+                        return true;
+                    }
+                }
+            } catch {
+                continue;
+            }
+        }
+
+        // Fallback: try clicking "Next" button (targetPage - 1) times if we're on page 1
+        // This is less reliable so we only use it as fallback
+        const nextButton = await page.$('.ds-c-pagination__item--next button, button[aria-label*="next page"], button:has-text("Next")');
+        if (nextButton) {
+            await nextButton.click();
+            await page.waitForLoadState('domcontentloaded', { timeout: config.timeouts.navigation });
+            console.log(`  Clicked Next (fallback for page ${targetPage})`);
+            return true;
+        }
+
+        return false;
+    } catch (err) {
+        console.error(`  Error navigating to page ${targetPage}:`, err.message);
+        return false;
+    }
 }
 
 /**
