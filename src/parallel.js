@@ -14,7 +14,7 @@
  *   node src/parallel.js --reset            - Reset and start fresh
  */
 
-import { readFile, writeFile, mkdir } from 'fs/promises';
+import { readFile, writeFile, mkdir, rm, rename, copyFile } from 'fs/promises';
 import { parse } from 'csv-parse/sync';
 import { stringify } from 'csv-stringify/sync';
 import { PlaywrightCrawler } from 'crawlee';
@@ -22,12 +22,244 @@ import { config, sleep } from './config.js';
 import { extractPlanList, extractPlanDetails, getTotalPlanInfo } from './extractors.js';
 import { exportErrors } from './exporters.js';
 import { existsSync } from 'fs';
+import * as readline from 'readline';
 
 const DEFAULT_WORKERS = 4;
 const STATE_FILE = 'crawler_state.json';
 const OUTPUT_JSON = 'medicare_plans.json';
 const OUTPUT_CSV_SUMMARY = 'medicare_plans_summary.csv';
 const OUTPUT_CSV_PLANS = 'medicare_plans_details.csv';
+const CRAWLEE_STORAGE = './storage';
+
+// ============================================================================
+// SAFE FILE WRITING & GRACEFUL SHUTDOWN
+// ============================================================================
+
+let isShuttingDown = false;
+let isSaving = false;
+let saveQueue = [];
+let saveTimer = null;
+const SAVE_DEBOUNCE_MS = 2000;  // Batch saves every 2 seconds
+
+/**
+ * Mutex lock for file writing
+ */
+class WriteLock {
+    constructor() {
+        this.locked = false;
+        this.queue = [];
+    }
+    
+    async acquire() {
+        return new Promise((resolve) => {
+            if (!this.locked) {
+                this.locked = true;
+                resolve();
+            } else {
+                this.queue.push(resolve);
+            }
+        });
+    }
+    
+    release() {
+        if (this.queue.length > 0) {
+            const next = this.queue.shift();
+            next();
+        } else {
+            this.locked = false;
+        }
+    }
+}
+
+const writeLock = new WriteLock();
+
+/**
+ * Atomic write - write to temp file, then rename
+ * This prevents corruption if interrupted mid-write
+ */
+async function atomicWriteFile(filePath, content) {
+    const tempPath = `${filePath}.tmp`;
+    const backupPath = `${filePath}.backup`;
+    
+    try {
+        // Write to temp file first
+        await writeFile(tempPath, content, 'utf-8');
+        
+        // If original exists, create backup
+        if (existsSync(filePath)) {
+            await copyFile(filePath, backupPath);
+        }
+        
+        // Atomic rename (this is atomic on most filesystems)
+        await rename(tempPath, filePath);
+        
+    } catch (err) {
+        // If rename failed, try to restore from backup
+        if (existsSync(backupPath) && !existsSync(filePath)) {
+            await copyFile(backupPath, filePath);
+        }
+        throw err;
+    }
+}
+
+/**
+ * Debounced save - batches multiple save requests
+ */
+function scheduleSave() {
+    if (saveTimer) return;  // Already scheduled
+    
+    saveTimer = setTimeout(async () => {
+        saveTimer = null;
+        await doSave();
+    }, SAVE_DEBOUNCE_MS);
+}
+
+/**
+ * Immediate save with lock - ensures only one write at a time
+ */
+async function doSave() {
+    if (isShuttingDown) return;
+    
+    await writeLock.acquire();
+    try {
+        isSaving = true;
+        
+        const statePath = `${config.outputDir}/${STATE_FILE}`;
+        state.metadata.lastUpdatedAt = new Date().toISOString();
+        await atomicWriteFile(statePath, JSON.stringify(state, null, 2));
+        
+        // Export outputs
+        await doExportOutputs();
+        
+    } catch (err) {
+        console.error(`❌ Save error: ${err.message}`);
+    } finally {
+        isSaving = false;
+        writeLock.release();
+    }
+}
+
+/**
+ * Graceful shutdown handler
+ */
+async function gracefulShutdown(signal) {
+    if (isShuttingDown) return;
+    isShuttingDown = true;
+    
+    console.log(`\n\n⚠️  Received ${signal}, saving state before exit...`);
+    
+    // Cancel any pending debounced save
+    if (saveTimer) {
+        clearTimeout(saveTimer);
+        saveTimer = null;
+    }
+    
+    try {
+        // Wait for any ongoing save to complete
+        let waitCount = 0;
+        while (isSaving && waitCount < 100) {
+            await sleep(100);
+            waitCount++;
+        }
+        
+        // Final save with lock
+        await doSave();
+        
+        const p = getProgress();
+        console.log(`\n✅ State saved successfully!`);
+        console.log(`   Phase 1: ${p.phase1}/${p.total} zipcodes`);
+        console.log(`   Phase 2: ${p.plansFilled}/${p.plansFound} plans`);
+        console.log(`\n💡 Run again to continue from where you left off.`);
+        
+    } catch (err) {
+        console.error(`❌ Error saving state: ${err.message}`);
+        console.log(`   Check ${config.outputDir}/${STATE_FILE}.backup if needed`);
+    }
+    
+    process.exit(0);
+}
+
+// Register shutdown handlers
+process.on('SIGINT', () => gracefulShutdown('SIGINT'));   // Ctrl+C
+process.on('SIGTERM', () => gracefulShutdown('SIGTERM')); // kill command
+
+/**
+ * Ask user yes/no question
+ */
+async function askUser(question) {
+    const rl = readline.createInterface({
+        input: process.stdin,
+        output: process.stdout
+    });
+    
+    return new Promise((resolve) => {
+        rl.question(question, (answer) => {
+            rl.close();
+            resolve(answer.toLowerCase().startsWith('y'));
+        });
+    });
+}
+
+// ============================================================================
+// TIME TRACKING FOR ETA
+// ============================================================================
+
+const timeTracker = {
+    phase1StartTime: null,
+    phase2StartTime: null,
+    phase1Times: [],  // Array of ms per zipcode
+    phase2Times: [],  // Array of ms per plan
+    lastItemTime: null
+};
+
+/**
+ * Calculate ETA based on average processing time
+ */
+function calculateETA(phase, remaining) {
+    const times = phase === 1 ? timeTracker.phase1Times : timeTracker.phase2Times;
+    
+    if (times.length < 3) return 'calculating...';
+    
+    // Use last 20 items for more accurate recent average
+    const recentTimes = times.slice(-20);
+    const avgMs = recentTimes.reduce((a, b) => a + b, 0) / recentTimes.length;
+    
+    const remainingMs = avgMs * remaining;
+    return formatDuration(remainingMs);
+}
+
+/**
+ * Format milliseconds to human readable duration
+ */
+function formatDuration(ms) {
+    const seconds = Math.floor(ms / 1000);
+    const minutes = Math.floor(seconds / 60);
+    const hours = Math.floor(minutes / 60);
+    
+    if (hours > 0) {
+        return `${hours}h ${minutes % 60}m`;
+    } else if (minutes > 0) {
+        return `${minutes}m ${seconds % 60}s`;
+    } else {
+        return `${seconds}s`;
+    }
+}
+
+/**
+ * Record time for an item
+ */
+function recordTime(phase) {
+    const now = Date.now();
+    if (timeTracker.lastItemTime) {
+        const elapsed = now - timeTracker.lastItemTime;
+        if (phase === 1) {
+            timeTracker.phase1Times.push(elapsed);
+        } else {
+            timeTracker.phase2Times.push(elapsed);
+        }
+    }
+    timeTracker.lastItemTime = now;
+}
 
 // ============================================================================
 // STATUS CONSTANTS
@@ -112,11 +344,14 @@ function createPlanEntry(planSummary) {
 }
 
 /**
- * Load state from disk if exists
+ * Load state from disk if exists (with backup fallback)
  */
 async function loadState() {
     const statePath = `${config.outputDir}/${STATE_FILE}`;
+    const backupPath = `${statePath}.backup`;
+    const jsonPath = `${config.outputDir}/${OUTPUT_JSON}`;
     
+    // Try main state file first
     if (existsSync(statePath)) {
         try {
             const content = await readFile(statePath, 'utf-8');
@@ -125,22 +360,117 @@ async function loadState() {
             console.log(`📂 Loaded existing state from ${statePath}`);
             console.log(`   - Phase 1 (URLs): ${state.metadata.phase1Completed}/${state.metadata.totalZipcodes} zipcodes`);
             console.log(`   - Phase 2 (Details): ${state.metadata.totalPlansFilled}/${state.metadata.totalPlansFound} plans`);
-            return true;
+            return { success: true };
         } catch (err) {
-            console.warn(`⚠️ Could not load state: ${err.message}`);
-            return false;
+            console.warn(`⚠️ Main state file corrupted: ${err.message}`);
         }
     }
-    return false;
+    
+    // Try backup state file
+    if (existsSync(backupPath)) {
+        try {
+            console.log(`   Trying backup file...`);
+            const content = await readFile(backupPath, 'utf-8');
+            const loaded = JSON.parse(content);
+            state = loaded;
+            console.log(`📂 Loaded state from BACKUP: ${backupPath}`);
+            console.log(`   - Phase 1 (URLs): ${state.metadata.phase1Completed}/${state.metadata.totalZipcodes} zipcodes`);
+            console.log(`   - Phase 2 (Details): ${state.metadata.totalPlansFilled}/${state.metadata.totalPlansFound} plans`);
+            return { success: true, fromBackup: true };
+        } catch (err) {
+            console.warn(`⚠️ Backup state also corrupted: ${err.message}`);
+        }
+    }
+    
+    // Try to recover from medicare_plans.json
+    if (existsSync(jsonPath)) {
+        try {
+            console.log(`   Trying to recover from ${OUTPUT_JSON}...`);
+            const content = await readFile(jsonPath, 'utf-8');
+            const plansData = JSON.parse(content);
+            
+            // Rebuild state from JSON
+            let phase1Done = 0, phase2Done = 0, totalPlans = 0, plansFilled = 0;
+            
+            for (const entry of plansData) {
+                if (entry.status === 'urls_collected' || entry.status === 'completed') {
+                    phase1Done++;
+                    totalPlans += entry.totalPlans || 0;
+                }
+                if (entry.status === 'completed') {
+                    phase2Done++;
+                    plansFilled += entry.plansWithDetails || 0;
+                } else {
+                    for (const plan of entry.plans || []) {
+                        if (plan.status === 'completed') plansFilled++;
+                    }
+                }
+            }
+            
+            state = {
+                metadata: {
+                    createdAt: new Date().toISOString(),
+                    lastUpdatedAt: new Date().toISOString(),
+                    totalZipcodes: plansData.length,
+                    phase1Completed: phase1Done,
+                    phase2Completed: phase2Done,
+                    totalPlansFound: totalPlans,
+                    totalPlansFilled: plansFilled,
+                    workers: DEFAULT_WORKERS
+                },
+                zipcodeOrder: plansData.map(e => e.zipcode),
+                zipcodes: {}
+            };
+            
+            for (const entry of plansData) {
+                state.zipcodes[entry.zipcode] = {
+                    index: entry.index,
+                    zipcode: entry.zipcode,
+                    state: entry.state,
+                    city: entry.city,
+                    status: entry.status,
+                    phase1StartedAt: null,
+                    phase1CompletedAt: null,
+                    phase2StartedAt: null,
+                    phase2CompletedAt: null,
+                    totalPlans: entry.totalPlans || 0,
+                    plansWithDetails: entry.plansWithDetails || 0,
+                    error: entry.error,
+                    plans: entry.plans || []
+                };
+            }
+            
+            console.log(`✅ Recovered state from ${OUTPUT_JSON}`);
+            console.log(`   - Phase 1 (URLs): ${phase1Done}/${plansData.length} zipcodes`);
+            console.log(`   - Phase 2 (Details): ${plansFilled}/${totalPlans} plans`);
+            return { success: true, recovered: true };
+            
+        } catch (err) {
+            console.warn(`⚠️ Could not recover from JSON: ${err.message}`);
+        }
+    }
+    
+    // Nothing found
+    return { success: false };
 }
 
 /**
- * Save state to disk (call after every important change)
+ * Save state - uses debounced save to batch multiple requests
+ * This prevents race conditions when multiple workers try to save simultaneously
  */
 async function saveState() {
-    const statePath = `${config.outputDir}/${STATE_FILE}`;
-    state.metadata.lastUpdatedAt = new Date().toISOString();
-    await writeFile(statePath, JSON.stringify(state, null, 2), 'utf-8');
+    scheduleSave();
+}
+
+/**
+ * Force immediate save (used at critical points)
+ */
+async function saveStateImmediate() {
+    if (saveTimer) {
+        clearTimeout(saveTimer);
+        saveTimer = null;
+    }
+    await doSave();
 }
 
 /**
@@ -262,15 +592,19 @@ function progressBar(current, total, width = 25) {
 }
 
 /**
- * Print progress
+ * Print progress with ETA
  */
 function printProgress(phase, zipcode, action) {
     const p = getProgress();
     
     if (phase === 1) {
-        console.log(`\n📍 Phase 1 ${progressBar(p.phase1, p.total)} ${p.phase1Pct}% | ${p.phase1}/${p.total} URLs | 📊 ${p.plansFound} plans found`);
+        const remaining = p.total - p.phase1;
+        const eta = calculateETA(1, remaining);
+        console.log(`\n📍 Phase 1 ${progressBar(p.phase1, p.total)} ${p.phase1Pct}% | ${p.phase1}/${p.total} URLs | 📊 ${p.plansFound} plans | ⏱️ ETA: ${eta}`);
     } else {
-        console.log(`\n📋 Phase 2 ${progressBar(p.plansFilled, p.plansFound)} ${p.phase2Pct}% | ${p.plansFilled}/${p.plansFound} details`);
+        const remaining = p.plansFound - p.plansFilled;
+        const eta = calculateETA(2, remaining);
+        console.log(`\n📋 Phase 2 ${progressBar(p.plansFilled, p.plansFound)} ${p.phase2Pct}% | ${p.plansFilled}/${p.plansFound} details | ⏱️ ETA: ${eta}`);
     }
     
     if (zipcode && action) {
@@ -279,9 +613,17 @@ function printProgress(phase, zipcode, action) {
 }
 
 /**
- * Export outputs (JSON + CSVs) - call frequently for incremental saves
+ * Export outputs - just schedules a save (actual export done in doExportOutputs)
  */
 async function exportOutputs() {
+    scheduleSave();
+}
+
+/**
+ * Actually export outputs (JSON + CSVs) with atomic writes
+ * Called by doSave() with lock held
+ */
+async function doExportOutputs() {
     const outputDir = config.outputDir;
     
     // Prepare data in original CSV order
@@ -301,7 +643,7 @@ async function exportOutputs() {
     }));
     
     const jsonPath = `${outputDir}/${OUTPUT_JSON}`;
-    await writeFile(jsonPath, JSON.stringify(jsonData, null, 2), 'utf-8');
+    await atomicWriteFile(jsonPath, JSON.stringify(jsonData, null, 2));
     
     // Summary CSV - one row per zipcode
     const summaryData = orderedEntries.map(entry => ({
@@ -317,7 +659,7 @@ async function exportOutputs() {
     }));
     
     const summaryPath = `${outputDir}/${OUTPUT_CSV_SUMMARY}`;
-    await writeFile(summaryPath, stringify(summaryData, { header: true }), 'utf-8');
+    await atomicWriteFile(summaryPath, stringify(summaryData, { header: true }));
     
     // Details CSV - one row per plan
     const detailsData = [];
@@ -364,7 +706,7 @@ async function exportOutputs() {
     }
     
     const detailsPath = `${outputDir}/${OUTPUT_CSV_PLANS}`;
-    await writeFile(detailsPath, stringify(detailsData, { header: true }), 'utf-8');
+    await atomicWriteFile(detailsPath, stringify(detailsData, { header: true }));
     
     return { jsonPath, summaryPath, detailsPath };
 }
@@ -422,9 +764,9 @@ async function loadZipcodes() {
 // ============================================================================
 
 const DELAYS = {
-    afterPageLoad: 4000,
-    betweenActions: 2000,
-    afterClick: 3000
+    afterPageLoad: 2000,
+    betweenActions: 1000,
+    afterClick: 1500
 };
 
 async function navigateWizard(page, zipcode) {
@@ -701,6 +1043,15 @@ async function main() {
         await mkdir(config.outputDir, { recursive: true });
     }
 
+    // Auto-clear Crawlee storage to allow fresh run with our state
+    console.log(`\n🧹 Clearing Crawlee storage for clean resume...`);
+    try {
+        await rm(`${CRAWLEE_STORAGE}/request_queues`, { recursive: true, force: true });
+        await rm(`${CRAWLEE_STORAGE}/key_value_stores`, { recursive: true, force: true });
+    } catch (e) {
+        // Ignore if doesn't exist
+    }
+
     // Load zipcodes from CSV
     let zipcodes = await loadZipcodes();
     if (options.limit) {
@@ -709,16 +1060,38 @@ async function main() {
     }
 
     // Load or initialize state
-    const stateExists = await loadState();
+    const loadResult = await loadState();
     
-    if (options.reset || !stateExists) {
+    if (options.reset) {
+        // User explicitly wants fresh start
         initializeState(zipcodes, options.workers);
-        await saveState();
-        await exportOutputs();
+        await saveStateImmediate();
+        console.log(`\n📁 Fresh start (--reset) - all outputs initialized`);
+    } else if (!loadResult.success) {
+        // Could not load any state - check if output files exist
+        const hasExistingData = existsSync(`${config.outputDir}/${OUTPUT_JSON}`) || 
+                               existsSync(`${config.outputDir}/${STATE_FILE}`);
+        
+        if (hasExistingData) {
+            console.log(`\n❌ ERROR: Could not load state but existing data files found!`);
+            console.log(`   This might mean data is corrupted.`);
+            console.log(`\n   Options:`);
+            console.log(`   1. Check ${config.outputDir}/${STATE_FILE}.backup`);
+            console.log(`   2. Check ${config.outputDir}/${OUTPUT_JSON}.backup`);
+            console.log(`   3. Run with --reset to start fresh (WILL LOSE ALL DATA)`);
+            console.log(`\n   To recover manually, you can try:`);
+            console.log(`   python3 -c "import json; d=json.load(open('${config.outputDir}/${OUTPUT_JSON}')); print(len(d), 'zipcodes')"`);
+            process.exit(1);
+        }
+        
+        // No existing data, safe to start fresh
+        initializeState(zipcodes, options.workers);
+        await saveStateImmediate();
         console.log(`\n📁 Fresh start - all outputs initialized`);
     } else {
+        // Successfully loaded state
         mergeState(zipcodes, options.workers);
-        await saveState();
+        await saveStateImmediate();
     }
 
     const startTime = Date.now();
@@ -740,6 +1113,8 @@ async function main() {
         console.log('✓ All zipcodes already have URLs collected');
     } else {
         console.log(`Processing ${phase1Pending.length} zipcodes...`);
+        timeTracker.phase1StartTime = Date.now();
+        timeTracker.lastItemTime = Date.now();
 
         const phase1Crawler = new PlaywrightCrawler({
             maxConcurrency: options.workers,
@@ -774,6 +1149,7 @@ async function main() {
                     await saveState();
                     await exportOutputs();
 
+                    recordTime(1);  // Track time for ETA
                     printProgress(1, zipcode, `✅ Got ${plans.length} plans`);
 
                 } catch (err) {
@@ -789,6 +1165,7 @@ async function main() {
                     await saveState();
                     await exportOutputs();
 
+                    recordTime(1);  // Track time for ETA even on errors
                     printProgress(1, zipcode, `❌ Error: ${err.message.substring(0, 40)}`);
                 }
 
@@ -843,6 +1220,8 @@ async function main() {
         console.log('✓ All plans already have details filled');
     } else {
         console.log(`Processing ${plansToFill.length} plans...`);
+        timeTracker.phase2StartTime = Date.now();
+        timeTracker.lastItemTime = Date.now();
 
         const phase2Crawler = new PlaywrightCrawler({
             maxConcurrency: options.workers,
@@ -879,6 +1258,7 @@ async function main() {
                     await saveState();
                     await exportOutputs();
 
+                    recordTime(2);  // Track time for ETA
                     printProgress(2, zipcode, `✅ Plan ${planIndex + 1}: ${planId}`);
 
                 } catch (err) {
@@ -887,6 +1267,8 @@ async function main() {
                     
                     await saveState();
                     await exportOutputs();
+                    
+                    recordTime(2);  // Track time for ETA even on errors
                 }
 
                 await sleep(500);
