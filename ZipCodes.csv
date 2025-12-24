@@ -1,0 +1,277 @@
+State;City;Zip Code
+Missouri;St. Louis;63101
+Missouri;St. Louis;63102
+Missouri;St. Louis;63103
+Missouri;St. Louis;63104
+Missouri;St. Louis;63105
+Missouri;St. Louis;63106
+Missouri;St. Louis;63108
+Missouri;St. Louis;63109
+Missouri;St. Louis;63110
+Missouri;St. Louis;63111
+Missouri;St. Louis;63112
+Missouri;St. Louis;63113
+Missouri;St. Louis;63115
+Missouri;St. Louis;63116
+Missouri;St. Louis;63118
+Missouri;St. Louis;63139
+Missouri;Kansas City;64101
+Missouri;Kansas City;64102
+Missouri;Kansas City;64105
+Missouri;Kansas City;64106
+Missouri;Kansas City;64108
+Missouri;Kansas City;64109
+Missouri;Kansas City;64110
+Missouri;Kansas City;64111
+Missouri;Kansas City;64112
+Missouri;Kansas City;64113
+Missouri;Kansas City;64114
+Missouri;Kansas City;64116
+Missouri;Kansas City;64117
+Missouri;Kansas City;64118
+Missouri;Kansas City;64119
+Missouri;Springfield;65802
+Missouri;Springfield;65803
+Missouri;Springfield;65804
+Missouri;Springfield;65806
+Missouri;Springfield;65807
+Missouri;Springfield;65809
+Missouri;Springfield;65810
+Missouri;Columbia;65201
+Missouri;Columbia;65202
+Missouri;Columbia;65203
+Missouri;Independence;64050
+Missouri;Independence;64052
+Missouri;Independence;64055
+Missouri;St. Charles;63301
+Missouri;St. Charles;63303
+Missouri;St. Charles;63304
+Missouri;Jefferson City;65101
+Missouri;Jefferson City;65109
+Missouri;Joplin;64801
+Missouri;Joplin;64804
+Missouri;St. Joseph;64501
+Missouri;St. Joseph;64503
+Missouri;St. Joseph;64504
+Missouri;St. Joseph;64506
+Missouri;St. Joseph;64507
+Illinois;Chicago;60601
+Illinois;Chicago;60602
+Illinois;Chicago;60603
+Illinois;Chicago;60604
+Illinois;Chicago;60605
+Illinois;Chicago;60606
+Illinois;Chicago;60607
+Illinois;Chicago;60608
+Illinois;Chicago;60609
+Illinois;Chicago;60610
+Illinois;Chicago;60611
+Illinois;Chicago;60612
+Illinois;Chicago;60613
+Illinois;Chicago;60614
+Illinois;Chicago;60615
+Illinois;Chicago;60616
+Illinois;Chicago;60617
+Illinois;Chicago;60618
+Illinois;Chicago;60619
+Illinois;Chicago;60620
+Illinois;Aurora;60502
+Illinois;Aurora;60503
+Illinois;Aurora;60504
+Illinois;Aurora;60505
+Illinois;Aurora;60506
+Illinois;Naperville;60540
+Illinois;Naperville;60563
+Illinois;Naperville;60564
+Illinois;Naperville;60565
+Illinois;Joliet;60431
+Illinois;Joliet;60432
+Illinois;Joliet;60433
+Illinois;Joliet;60435
+Illinois;Joliet;60436
+Illinois;Rockford;61101
+Illinois;Rockford;61102
+Illinois;Rockford;61103
+Illinois;Rockford;61104
+Illinois;Rockford;61107
+Illinois;Rockford;61108
+Illinois;Rockford;61109
+Illinois;Springfield;62701
+Illinois;Springfield;62702
+Illinois;Springfield;62703
+Illinois;Springfield;62704
+Illinois;Peoria;61602
+Illinois;Peoria;61603
+Illinois;Peoria;61604
+Illinois;Peoria;61605
+Illinois;Peoria;61606
+Illinois;Peoria;61614
+Illinois;Peoria;61615
+Illinois;Champaign;61820
+Illinois;Champaign;61821
+Illinois;Champaign;61822
+Illinois;Bloomington;61701
+Illinois;Bloomington;61704
+Illinois;Bloomington;61705
+Illinois;Decatur;62521
+Illinois;Decatur;62522
+Illinois;Decatur;62526
+Illinois;Evanston;60201
+Illinois;Evanston;60202
+Illinois;Evanston;60203
+Indiana;Indianapolis;46201
+Indiana;Indianapolis;46202
+Indiana;Indianapolis;46203
+Indiana;Indianapolis;46204
+Indiana;Indianapolis;46205
+Indiana;Indianapolis;46208
+Indiana;Indianapolis;46214
+Indiana;Indianapolis;46217
+Indiana;Indianapolis;46218
+Indiana;Indianapolis;46219
+Indiana;Indianapolis;46220
+Indiana;Indianapolis;46221
+Indiana;Indianapolis;46222
+Indiana;Indianapolis;46224
+Indiana;Indianapolis;46225
+Indiana;Indianapolis;46226
+Indiana;Indianapolis;46227
+Indiana;Indianapolis;46228
+Indiana;Indianapolis;46229
+Indiana;Indianapolis;46231
+Indiana;Indianapolis;46234
+Indiana;Indianapolis;46235
+Indiana;Indianapolis;46236
+Indiana;Indianapolis;46237
+Indiana;Indianapolis;46239
+Indiana;Indianapolis;46240
+Indiana;Indianapolis;46241
+Indiana;Indianapolis;46250
+Indiana;Indianapolis;46254
+Indiana;Indianapolis;46256
+Indiana;Indianapolis;46259
+Indiana;Indianapolis;46260
+Indiana;Indianapolis;46268
+Indiana;Indianapolis;46278
+Indiana;Fort Wayne;46802
+Indiana;Fort Wayne;46803
+Indiana;Fort Wayne;46804
+Indiana;Fort Wayne;46805
+Indiana;Fort Wayne;46806
+Indiana;Fort Wayne;46807
+Indiana;Fort Wayne;46808
+Indiana;Fort Wayne;46809
+Indiana;Fort Wayne;46815
+Indiana;Fort Wayne;46816
+Indiana;Fort Wayne;46818
+Indiana;Fort Wayne;46819
+Indiana;Fort Wayne;46825
+Indiana;Fort Wayne;46835
+Indiana;Fort Wayne;46845
+Indiana;Evansville;47708
+Indiana;Evansville;47710
+Indiana;Evansville;47711
+Indiana;Evansville;47712
+Indiana;Evansville;47713
+Indiana;Evansville;47714
+Indiana;Evansville;47715
+Indiana;Evansville;47720
+Indiana;Evansville;47725
+Indiana;South Bend;46601
+Indiana;South Bend;46613
+Indiana;South Bend;46614
+Indiana;South Bend;46615
+Indiana;South Bend;46617
+Indiana;South Bend;46619
+Indiana;South Bend;46628
+Indiana;South Bend;46635
+Indiana;South Bend;46637
+Indiana;Carmel;46032
+Indiana;Carmel;46033
+Indiana;Carmel;46074
+Indiana;Bloomington;47401
+Indiana;Bloomington;47403
+Indiana;Bloomington;47404
+Indiana;Bloomington;47408
+Indiana;Gary;46402
+Indiana;Gary;46403
+Indiana;Gary;46404
+Indiana;Gary;46406
+Indiana;Gary;46407
+Indiana;Gary;46408
+Indiana;Gary;46409
+Indiana;Hammond;46320
+Indiana;Hammond;46323
+Indiana;Hammond;46324
+Indiana;Hammond;46327
+Indiana;Lafayette;47901
+Indiana;Lafayette;47904
+Indiana;Lafayette;47905
+Indiana;Lafayette;47909
+Indiana;Muncie;47302
+Indiana;Muncie;47303
+Indiana;Muncie;47304
+Indiana;Muncie;47305
+Indiana;Terre Haute;47802
+Indiana;Terre Haute;47803
+Indiana;Terre Haute;47804
+Indiana;Terre Haute;47805
+Indiana;Terre Haute;47807
+Kentucky;Louisville;40202
+Kentucky;Louisville;40203
+Kentucky;Louisville;40204
+Kentucky;Louisville;40205
+Kentucky;Louisville;40206
+Kentucky;Louisville;40207
+Kentucky;Louisville;40208
+Kentucky;Louisville;40209
+Kentucky;Louisville;40210
+Kentucky;Louisville;40211
+Kentucky;Louisville;40212
+Kentucky;Louisville;40213
+Kentucky;Louisville;40214
+Kentucky;Louisville;40215
+Kentucky;Louisville;40216
+Kentucky;Louisville;40217
+Kentucky;Louisville;40218
+Kentucky;Louisville;40219
+Kentucky;Louisville;40220
+Kentucky;Louisville;40222
+Kentucky;Louisville;40223
+Kentucky;Louisville;40228
+Kentucky;Louisville;40229
+Kentucky;Louisville;40241
+Kentucky;Louisville;40242
+Kentucky;Louisville;40243
+Kentucky;Louisville;40245
+Kentucky;Louisville;40258
+Kentucky;Louisville;40272
+Kentucky;Louisville;40291
+Kentucky;Louisville;40299
+Kentucky;Lexington;40502
+Kentucky;Lexington;40503
+Kentucky;Lexington;40504
+Kentucky;Lexington;40505
+Kentucky;Lexington;40507
+Kentucky;Lexington;40508
+Kentucky;Lexington;40509
+Kentucky;Lexington;40511
+Kentucky;Lexington;40513
+Kentucky;Lexington;40514
+Kentucky;Lexington;40515
+Kentucky;Lexington;40516
+Kentucky;Lexington;40517
+Kentucky;Bowling Green;42101
+Kentucky;Bowling Green;42103
+Kentucky;Bowling Green;42104
+Kentucky;Owensboro;42301
+Kentucky;Owensboro;42303
+Kentucky;Covington;41011
+Kentucky;Covington;41014
+Kentucky;Covington;41015
+Kentucky;Covington;41016
+Kentucky;Covington;41017
+Kentucky;Frankfort;40601
+Kentucky;Paducah;42001
+Kentucky;Paducah;42003
+Kentucky;Elizabethtown;42701

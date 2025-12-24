@@ -1,0 +1,20 @@
+{
+  "name": "medicare-plan-crawler",
+  "version": "1.0.0",
+  "description": "Crawlee-based crawler for Medicare Advantage Plan data",
+  "main": "src/main.js",
+  "type": "module",
+  "scripts": {
+    "start": "node src/main.js",
+    "test": "node src/main.js --test --zipcode 63101"
+  },
+  "dependencies": {
+    "crawlee": "^3.11.0",
+    "playwright": "^1.40.0",
+    "csv-parse": "^5.5.0",
+    "csv-stringify": "^6.4.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
