@@ -23,7 +23,7 @@ export const config = {
     requestHandlerTimeoutSecs: 600, // 10 minutes per request (for large zipcodes)
 
     // Browser settings
-    headless: false, // Set to false for debugging (visible browser)
+    headless: true, // Set to false for debugging (visible browser)
     slowMo: 100, // Slow down actions by 100ms
 
     // Delay settings (in milliseconds)

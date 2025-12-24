@@ -171,18 +171,38 @@ async function navigateWizard(page, zipcode) {
         console.log('  Current URL:', page.url());
 
         // Step 5: Handle "Do you get help paying for Medicare" question
+        // Page shows: Medicaid, SSI, Medicare Savings Program, Extra Help checkboxes
+        // And "I don't get help from any of these programs" option
         console.log('Step 5: Looking for help/subsidy question...');
 
+        // Wait for the page to show the help question
+        await page.waitForSelector('input[type="checkbox"], input[type="radio"]', { timeout: 10000 }).catch(() => {});
+        await sleep(1000);
+
         const noHelpSelectors = [
+            // New page format - "I don't get help from any of these programs"
+            'input[value="none"]',
+            'input#none',
+            'input[id*="none"]',
+            'label[for="none"]',
+            'input[name="subsidyTypes"][value="none"]',
+            'input[name*="subsidy"][value="none"]',
+            'input[name*="help"][value="none"]',
+            // Try checkbox/radio with "none" value
+            'input[type="checkbox"][value="none"]',
+            'input[type="radio"][value="none"]',
+            // Older format
             'input[value="noSubsidy"]',
             'input[value="no"]',
             'label:has-text("I don\'t get help")',
             'label:has-text("No, I don\'t")',
             '#no-help',
             '[data-testid*="no-help"]',
-            '[data-testid*="noSubsidy"]'
+            '[data-testid*="noSubsidy"]',
+            '[data-testid*="none"]'
         ];
 
+        let helpSelected = false;
         for (const selector of noHelpSelectors) {
             try {
                 const element = await page.$(selector);
@@ -191,12 +211,56 @@ async function navigateWizard(page, zipcode) {
                     if (isVisible) {
                         await element.click();
                         console.log(`  Selected no help using: ${selector}`);
+                        helpSelected = true;
                         break;
                     }
                 }
             } catch {
                 continue;
             }
+        }
+
+        // If still not selected, try by text content
+        if (!helpSelected) {
+            try {
+                const labels = await page.$$('label');
+                for (const label of labels) {
+                    const text = await label.textContent();
+                    if (text && (text.toLowerCase().includes("don't get help") || text.toLowerCase().includes("i don't get"))) {
+                        await label.click();
+                        console.log('  Selected "no help" by label text');
+                        helpSelected = true;
+                        break;
+                    }
+                }
+            } catch { }
+        }
+
+        // If still not selected, try clicking via JavaScript evaluation
+        if (!helpSelected) {
+            try {
+                const clicked = await page.evaluate(() => {
+                    // Find by text content
+                    const labels = document.querySelectorAll('label');
+                    for (const label of labels) {
+                        if (label.textContent.toLowerCase().includes("don't get help")) {
+                            label.click();
+                            return true;
+                        }
+                    }
+                    // Find input with none value
+                    const inputs = document.querySelectorAll('input[value="none"], input[value="noSubsidy"]');
+                    if (inputs.length > 0) {
+                        inputs[0].click();
+                        return true;
+                    }
+                    return false;
+                });
+                if (clicked) {
+                    console.log('  Selected "no help" via page.evaluate');
+                    helpSelected = true;
+                }
+            } catch { }
         }
 
         await sleep(config.delays.betweenActions);
