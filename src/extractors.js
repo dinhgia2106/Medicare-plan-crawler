@@ -474,7 +474,39 @@ export async function hasNextPage(page) {
 }
 
 /**
- * Navigate to the next page of results
+ * Navigate to a specific page of results by updating URL
+ * @param {import('playwright').Page} page - Playwright page object
+ * @param {number} targetPage - The page number to navigate to
+ * @returns {Promise<boolean>} True if navigation was successful
+ */
+export async function goToPage(page, targetPage) {
+    try {
+        const currentUrl = page.url();
+        let newUrl;
+
+        // Check if URL has page parameter
+        if (currentUrl.includes('page=')) {
+            // Replace existing page parameter
+            newUrl = currentUrl.replace(/page=\d+/, `page=${targetPage}`);
+        } else {
+            // Add page parameter
+            const separator = currentUrl.includes('?') ? '&' : '?';
+            newUrl = `${currentUrl}${separator}page=${targetPage}`;
+        }
+
+        console.log(`  Navigating to page ${targetPage}...`);
+        await page.goto(newUrl, { waitUntil: 'domcontentloaded' });
+        await page.waitForLoadState('domcontentloaded', { timeout: config.timeouts.navigation });
+
+        return true;
+    } catch (err) {
+        console.error('Error navigating to page:', err.message);
+        return false;
+    }
+}
+
+/**
+ * Navigate to the next page of results (legacy - uses button click)
  * @param {import('playwright').Page} page - Playwright page object
  * @returns {Promise<boolean>} True if navigation was successful
  */

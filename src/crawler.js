@@ -4,7 +4,7 @@
 
 import { PlaywrightCrawler, Dataset } from 'crawlee';
 import { config, sleep } from './config.js';
-import { extractPlanList, extractPlanDetails, hasNextPage, goToNextPage, getTotalPlanInfo } from './extractors.js';
+import { extractPlanList, extractPlanDetails, hasNextPage, goToNextPage, goToPage, getTotalPlanInfo } from './extractors.js';
 import { appendToJSON } from './exporters.js';
 
 /**
@@ -303,6 +303,7 @@ async function clickButton(page, textOptions) {
  */
 async function extractAllPlans(page, zipcodeInfo) {
     const allPlans = [];
+    const processedPlanIds = new Set(); // Track plan IDs to avoid duplicates
     let pageNum = 1;
 
     // Get total plans count first
@@ -313,21 +314,36 @@ async function extractAllPlans(page, zipcodeInfo) {
     console.log(`Total Plans: ${totalPlans} | Pages: ${totalPages} | Per Page: ${plansPerPage}`);
     console.log('='.repeat(60));
 
+    // Maximum pages to prevent infinite loops
+    const maxPages = Math.max(totalPages, 10);
+
     do {
         console.log(`\n--- PAGE ${pageNum}/${totalPages} ---`);
 
         // Get plan list from current page
         const planList = await extractPlanList(page);
         const plansOnThisPage = planList.length;
-        const processedSoFar = allPlans.length;
         console.log(`Found ${plansOnThisPage} plans`);
+
+        // Track how many new plans we find on this page
+        let newPlansOnPage = 0;
 
         // For each plan, get details
         for (let i = 0; i < planList.length; i++) {
             const plan = planList[i];
-            const overallIndex = processedSoFar + i + 1;
-            
-            console.log(`\n  [${overallIndex}/${totalPlans}] ${plan.planName || 'Unknown'} (${plan.planId || 'N/A'})`);
+            const planId = plan.planId || `unknown-${Date.now()}-${i}`;
+
+            // Skip if already processed
+            if (processedPlanIds.has(planId)) {
+                console.log(`\n  [SKIP] ${plan.planName || 'Unknown'} (${planId}) - already processed`);
+                continue;
+            }
+
+            processedPlanIds.add(planId);
+            newPlansOnPage++;
+            const overallIndex = allPlans.length + 1;
+
+            console.log(`\n  [${overallIndex}/${totalPlans}] ${plan.planName || 'Unknown'} (${planId})`);
 
             try {
                 // Use detailsUrl from extracted data if available (more reliable)
@@ -336,7 +352,7 @@ async function extractAllPlans(page, zipcodeInfo) {
                     const currentUrl = page.url();
                     await page.goto(plan.detailsUrl, { waitUntil: 'domcontentloaded' });
                     // Wait for plan details content to render
-                    await page.waitForSelector('.PlanDetailsPagePlanInfo, .e2e-plan-details-page', { timeout: 15000 }).catch(() => {});
+                    await page.waitForSelector('.PlanDetailsPagePlanInfo, .e2e-plan-details-page', { timeout: 15000 }).catch(() => { });
                     await sleep(2000);
 
                     // Extract detailed information
@@ -359,7 +375,7 @@ async function extractAllPlans(page, zipcodeInfo) {
                     // Go back to plan list
                     await page.goto(currentUrl, { waitUntil: 'domcontentloaded' });
                     // Wait for plan cards to re-appear
-                    await page.waitForSelector(config.selectors.planCards, { timeout: 15000 }).catch(() => {});
+                    await page.waitForSelector(config.selectors.planCards, { timeout: 15000 }).catch(() => { });
                     await sleep(2000);
                 } else {
                     // Fallback: click on plan card to view details
@@ -371,7 +387,7 @@ async function extractAllPlans(page, zipcodeInfo) {
                             console.log(`     -> Opening details (click)...`);
                             await detailsLink.click();
                             await page.waitForLoadState('domcontentloaded', { timeout: config.timeouts.navigation });
-                            await page.waitForSelector('.PlanDetailsPagePlanInfo, .e2e-plan-details-page', { timeout: 15000 }).catch(() => {});
+                            await page.waitForSelector('.PlanDetailsPagePlanInfo, .e2e-plan-details-page', { timeout: 15000 }).catch(() => { });
                             await sleep(2000);
 
                             const details = await extractPlanDetails(page);
@@ -390,7 +406,7 @@ async function extractAllPlans(page, zipcodeInfo) {
 
                             await page.goBack();
                             await page.waitForLoadState('domcontentloaded', { timeout: config.timeouts.navigation });
-                            await page.waitForSelector(config.selectors.planCards, { timeout: 15000 }).catch(() => {});
+                            await page.waitForSelector(config.selectors.planCards, { timeout: 15000 }).catch(() => { });
                             await sleep(2000);
                         } else {
                             console.log(`     [!] No details link, saving summary only`);
@@ -413,13 +429,38 @@ async function extractAllPlans(page, zipcodeInfo) {
                     scrapedAt: new Date().toISOString()
                 });
             }
+
+            // Stop if we've reached the expected total
+            if (allPlans.length >= totalPlans) {
+                console.log(`\n[INFO] Reached expected total of ${totalPlans} plans`);
+                break;
+            }
         }
 
-        // Check for next page
-        if (await hasNextPage(page)) {
-            console.log(`\n>> Next page ${pageNum + 1}/${totalPages}`);
-            await goToNextPage(page);
-            await page.waitForSelector(config.selectors.planCards, { timeout: 15000 }).catch(() => {});
+        // Stop if we've reached the expected total
+        if (allPlans.length >= totalPlans) {
+            console.log(`\nCompleted: collected ${allPlans.length}/${totalPlans} plans`);
+            break;
+        }
+
+        // Stop if all plans on this page were duplicates (pagination loop detected)
+        if (newPlansOnPage === 0) {
+            console.log(`\n[WARN] All ${plansOnThisPage} plans on this page were duplicates - stopping pagination`);
+            break;
+        }
+
+        // Stop if we've exceeded max pages
+        if (pageNum >= maxPages) {
+            console.log(`\n[WARN] Reached maximum page limit (${maxPages}) - stopping`);
+            break;
+        }
+
+        // Check for next page - use direct URL navigation instead of clicking next button
+        if (pageNum < totalPages) {
+            const nextPage = pageNum + 1;
+            console.log(`\n>> Navigating to page ${nextPage}/${totalPages}`);
+            await goToPage(page, nextPage);
+            await page.waitForSelector(config.selectors.planCards, { timeout: 15000 }).catch(() => { });
             await sleep(2000);
             pageNum++;
         } else {
@@ -432,7 +473,8 @@ async function extractAllPlans(page, zipcodeInfo) {
     // Final summary
     console.log('\n' + '='.repeat(60));
     console.log(`CRAWL COMPLETE: ${zipcodeInfo.zipcode}`);
-    console.log(`Plans: ${allPlans.length} | Pages: ${pageNum} | Success: ${allPlans.filter(p => !p.error).length}/${allPlans.length}`);
+    console.log(`Plans: ${allPlans.length} | Unique IDs: ${processedPlanIds.size} | Pages: ${pageNum}`);
+    console.log(`Success: ${allPlans.filter(p => !p.error).length}/${allPlans.length}`);
     console.log('='.repeat(60) + '\n');
 
     return allPlans;
