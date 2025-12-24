@@ -231,17 +231,37 @@ export async function extractPlanDetails(page) {
                 });
             }
 
-            // Helper function to get text with <br> converted to \n
+            // Helper function to get text with <br> converted to \n and collapsible content separated
             const getTextWithLineBreaks = (element) => {
                 if (!element) return null;
                 // Clone the element to avoid modifying the DOM
                 const clone = element.cloneNode(true);
+
                 // Replace <br> tags with newline markers
                 clone.querySelectorAll('br').forEach(br => {
                     br.replaceWith('\n');
                 });
+
+                // Add separator before collapsible/dropdown content
+                const collapsibleSelectors = [
+                    '.mct-c-collapsible__contentOuter',
+                    '.mct-c-collapsible__content-outer',
+                    '.mct-c-collapsible__contentInner',
+                    '.mct-c-collapsible__content-inner'
+                ];
+                collapsibleSelectors.forEach(selector => {
+                    clone.querySelectorAll(selector).forEach(collapsible => {
+                        // Insert separator text node before the collapsible content
+                        const separator = document.createTextNode(' - ');
+                        collapsible.parentNode.insertBefore(separator, collapsible);
+                    });
+                });
+
                 // Get text and clean up
-                return clone.textContent.trim().replace(/\n\s+/g, '\n');
+                let text = clone.textContent.trim();
+                // Clean up multiple spaces and normalize line breaks
+                text = text.replace(/\n\s+/g, '\n').replace(/\s+/g, ' ').replace(/ - /g, ' - ');
+                return text;
             };
 
             // Overview Section - Parse all tables by their caption titles
@@ -423,10 +443,123 @@ export async function extractPlanDetails(page) {
             };
         });
 
+        // Handle Drug Coverage dropdown - need to interact with page for each option
+        const drugCoverageWithOptions = await extractDrugCoverageWithDropdown(page);
+        if (drugCoverageWithOptions) {
+            details.drugCoverage = drugCoverageWithOptions;
+        }
+
         return details;
     } catch (err) {
         console.error('Error extracting plan details:', err.message);
         return { error: err.message };
+    }
+}
+
+/**
+ * Extract drug coverage data for all pharmacy options in dropdown
+ * @param {import('playwright').Page} page - Playwright page object
+ * @returns {Promise<Object>} Drug coverage with all pharmacy options
+ */
+async function extractDrugCoverageWithDropdown(page) {
+    try {
+        // Check if drug coverage section and dropdown exist
+        const hasDropdown = await page.$('#drug-coverage .CostByTier__filterContainer select, #drug-coverage .ds-c-dropdown');
+
+        if (!hasDropdown) {
+            // No dropdown, return current data as-is
+            return null;
+        }
+
+        // Get all dropdown options
+        const options = await page.$$eval(
+            '#drug-coverage select[name="tier-drug-cost-dropdown"] option',
+            opts => opts.filter(o => o.value).map(o => ({ value: o.value, label: o.textContent.trim() }))
+        );
+
+        if (options.length === 0) {
+            return null;
+        }
+
+        const drugCoverageByPharmacy = {};
+
+        for (const option of options) {
+            // Click dropdown button to open menu
+            const dropdownButton = await page.$('#drug-coverage .ds-c-dropdown__button');
+            if (dropdownButton) {
+                await dropdownButton.click();
+                await page.waitForTimeout(300);
+
+                // Click the option in the listbox
+                const optionSelector = `[role="listbox"] [data-value="${option.value}"], [role="option"][data-value="${option.value}"]`;
+                const optionButton = await page.$(optionSelector);
+
+                if (optionButton) {
+                    await optionButton.click();
+                    await page.waitForTimeout(500); // Wait for content to update
+                } else {
+                    // Try alternative: click by text
+                    const optionByText = await page.$(`[role="listbox"] button:has-text("${option.label}")`);
+                    if (optionByText) {
+                        await optionByText.click();
+                        await page.waitForTimeout(500);
+                    }
+                }
+            }
+
+            // Extract tier data for this option
+            const tierData = await page.evaluate(() => {
+                const getTextWithLineBreaks = (element) => {
+                    if (!element) return null;
+                    const clone = element.cloneNode(true);
+                    clone.querySelectorAll('br').forEach(br => br.replaceWith('\n'));
+                    clone.querySelectorAll('.mct-c-collapsible__contentOuter, .mct-c-collapsible__content-outer').forEach(collapsible => {
+                        const separator = document.createTextNode(' - ');
+                        collapsible.parentNode.insertBefore(separator, collapsible);
+                    });
+                    let text = clone.textContent.trim();
+                    text = text.replace(/\n\s+/g, '\n').replace(/\s+/g, ' ');
+                    return text;
+                };
+
+                const tiersTable = document.querySelector('#CostsByDrugTierTable');
+                if (!tiersTable) return [];
+
+                const tiers = [];
+                const rows = tiersTable.querySelectorAll('tbody tr');
+                rows.forEach(row => {
+                    const thEl = row.querySelector('th');
+                    const initialEl = row.querySelector('[data-testid*="initial_coverage"]');
+                    const catastrophicEl = row.querySelector('[data-testid*="catastrophic"]');
+                    if (thEl) {
+                        tiers.push({
+                            tier: getTextWithLineBreaks(thEl),
+                            initialCoverage: getTextWithLineBreaks(initialEl),
+                            catastrophic: getTextWithLineBreaks(catastrophicEl)
+                        });
+                    }
+                });
+                return tiers;
+            });
+
+            // Create a clean key from the option label
+            const key = option.label
+                .toLowerCase()
+                .replace(/drug cost for/gi, '')
+                .replace(/pharmacy/gi, '')
+                .trim()
+                .replace(/\s+/g, '_');
+
+            drugCoverageByPharmacy[key] = {
+                label: option.label,
+                tiers: tierData
+            };
+        }
+
+        return { tiersByPharmacy: drugCoverageByPharmacy };
+    } catch (err) {
+        console.error('Error extracting drug coverage with dropdown:', err.message);
+        return null;
     }
 }
 
