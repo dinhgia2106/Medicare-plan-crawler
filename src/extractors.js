@@ -245,9 +245,18 @@ export async function extractPlanDetails(page) {
                 // Check if this element has collapsible content (like "Limits apply")
                 const collapsibleContent = clone.querySelector('.mct-c-collapsible__contentInner, .mct-c-collapsible__content-inner');
                 if (collapsibleContent) {
+                    // Add newline before each ds-u-margin-y--2 div (except the first one)
+                    const marginDivs = collapsibleContent.querySelectorAll('.ds-u-margin-y--2');
+                    marginDivs.forEach((div, index) => {
+                        if (index > 0) {
+                            // Insert newline before this div
+                            div.insertBefore(document.createTextNode('\n'), div.firstChild);
+                        }
+                    });
+
                     // For elements with collapsible, only return the inner content (the actual limit description)
                     let text = collapsibleContent.textContent.trim();
-                    text = text.replace(/\n\s+/g, '\n').replace(/\s+/g, ' ');
+                    text = text.replace(/\n\s+/g, '\n').replace(/  +/g, ' ');
                     return text || null;
                 }
 
@@ -636,8 +645,16 @@ async function extractCurrentTierData(page) {
             // Check if this element has collapsible content
             const collapsibleContent = clone.querySelector('.mct-c-collapsible__contentInner, .mct-c-collapsible__content-inner');
             if (collapsibleContent) {
+                // Add newline before each ds-u-margin-y--2 div (except the first one)
+                const marginDivs = collapsibleContent.querySelectorAll('.ds-u-margin-y--2');
+                marginDivs.forEach((div, index) => {
+                    if (index > 0) {
+                        div.insertBefore(document.createTextNode('\n'), div.firstChild);
+                    }
+                });
+
                 let text = collapsibleContent.textContent.trim();
-                text = text.replace(/\n\s+/g, '\n').replace(/\s+/g, ' ');
+                text = text.replace(/\n\s+/g, '\n').replace(/  +/g, ' ');
                 return text || null;
             }
 
