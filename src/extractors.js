@@ -368,6 +368,27 @@ export async function extractPlanDetails(page) {
                         }
                     });
                 }
+
+                // Part B drugs table
+                const allDrugTables = drugSection.querySelectorAll('table');
+                allDrugTables.forEach(table => {
+                    const caption = table.querySelector('caption h3');
+                    if (caption && caption.textContent.trim().toLowerCase().includes('part b')) {
+                        drugCoverage.partBDrugs = [];
+                        const rows = table.querySelectorAll('tbody tr');
+                        rows.forEach(row => {
+                            const thEl = row.querySelector('th');
+                            const tds = row.querySelectorAll('td');
+                            if (thEl) {
+                                drugCoverage.partBDrugs.push({
+                                    drug: getTextWithLineBreaks(thEl),
+                                    cost: tds[0] ? getTextWithLineBreaks(tds[0]) : null,
+                                    limits: tds[1] ? getTextWithLineBreaks(tds[1]) : null
+                                });
+                            }
+                        });
+                    }
+                });
             }
 
             // Extra Benefits section
@@ -463,15 +484,19 @@ export async function extractPlanDetails(page) {
  */
 async function extractDrugCoverageWithDropdown(page) {
     try {
-        // Check if drug coverage section and dropdown exist
-        const hasDropdown = await page.$('#drug-coverage .CostByTier__filterContainer select, #drug-coverage .ds-c-dropdown');
-
-        if (!hasDropdown) {
-            // No dropdown, return current data as-is
+        // Check if drug coverage section exists
+        const drugSection = await page.$('#drug-coverage');
+        if (!drugSection) {
             return null;
         }
 
-        // Get all dropdown options
+        // Check if dropdown exists
+        const dropdownContainer = await page.$('#drug-coverage .CostByTier__filterContainer');
+        if (!dropdownContainer) {
+            return null;
+        }
+
+        // Get all dropdown options from the hidden select
         const options = await page.$$eval(
             '#drug-coverage select[name="tier-drug-cost-dropdown"] option',
             opts => opts.filter(o => o.value).map(o => ({ value: o.value, label: o.textContent.trim() }))
@@ -481,79 +506,113 @@ async function extractDrugCoverageWithDropdown(page) {
             return null;
         }
 
+        console.log(`     [Drug Coverage] Found ${options.length} pharmacy options`);
+
         const drugCoverageByPharmacy = {};
 
+        // First, extract the current/default tier data
+        const currentLabel = await page.$eval(
+            '#drug-coverage .ds-c-dropdown__button span:first-child',
+            el => el.textContent.trim()
+        ).catch(() => 'default');
+
+        const defaultTierData = await extractCurrentTierData(page);
+        const defaultKey = currentLabel
+            .toLowerCase()
+            .replace(/drug cost for/gi, '')
+            .replace(/pharmacy/gi, '')
+            .trim()
+            .replace(/\s+/g, '_') || 'default';
+
+        drugCoverageByPharmacy[defaultKey] = {
+            label: currentLabel,
+            tiers: defaultTierData
+        };
+
+        // Now iterate through other options
         for (const option of options) {
-            // Click dropdown button to open menu
-            const dropdownButton = await page.$('#drug-coverage .ds-c-dropdown__button');
-            if (dropdownButton) {
-                await dropdownButton.click();
-                await page.waitForTimeout(300);
-
-                // Click the option in the listbox
-                const optionSelector = `[role="listbox"] [data-value="${option.value}"], [role="option"][data-value="${option.value}"]`;
-                const optionButton = await page.$(optionSelector);
-
-                if (optionButton) {
-                    await optionButton.click();
-                    await page.waitForTimeout(500); // Wait for content to update
-                } else {
-                    // Try alternative: click by text
-                    const optionByText = await page.$(`[role="listbox"] button:has-text("${option.label}")`);
-                    if (optionByText) {
-                        await optionByText.click();
-                        await page.waitForTimeout(500);
-                    }
-                }
+            // Skip if this is the current selection
+            if (option.label === currentLabel) {
+                continue;
             }
 
-            // Extract tier data for this option
-            const tierData = await page.evaluate(() => {
-                const getTextWithLineBreaks = (element) => {
-                    if (!element) return null;
-                    const clone = element.cloneNode(true);
-                    clone.querySelectorAll('br').forEach(br => br.replaceWith('\n'));
-                    clone.querySelectorAll('.mct-c-collapsible__contentOuter, .mct-c-collapsible__content-outer').forEach(collapsible => {
-                        const separator = document.createTextNode(' - ');
-                        collapsible.parentNode.insertBefore(separator, collapsible);
-                    });
-                    let text = clone.textContent.trim();
-                    text = text.replace(/\n\s+/g, '\n').replace(/\s+/g, ' ');
-                    return text;
+            try {
+                // Step 1: Click dropdown button to open menu
+                const dropdownButton = await page.$('#drug-coverage .ds-c-dropdown__button');
+                if (!dropdownButton) {
+                    console.log(`     [Drug Coverage] Dropdown button not found`);
+                    continue;
+                }
+
+                await dropdownButton.click();
+                await page.waitForTimeout(400);
+
+                // Step 2: Find and click the option in the opened menu
+                // The menu appears with role="listbox" and options have role="option"
+                const menuSelector = '[role="listbox"]';
+                await page.waitForSelector(menuSelector, { timeout: 2000 }).catch(() => null);
+
+                // Try to click the option by its text content
+                const optionClicked = await page.evaluate((labelText) => {
+                    const listbox = document.querySelector('[role="listbox"]');
+                    if (!listbox) return false;
+
+                    const options = listbox.querySelectorAll('[role="option"], button, li');
+                    for (const opt of options) {
+                        if (opt.textContent.trim().includes(labelText) || labelText.includes(opt.textContent.trim())) {
+                            opt.click();
+                            return true;
+                        }
+                    }
+                    return false;
+                }, option.label);
+
+                if (!optionClicked) {
+                    console.log(`     [Drug Coverage] Could not click option: ${option.label}`);
+                    // Close dropdown if still open
+                    await page.keyboard.press('Escape');
+                    continue;
+                }
+
+                await page.waitForTimeout(300);
+
+                // Step 3: Click the "Change" button
+                const changeButton = await page.$('#drug-coverage .CostByTier__changeButton');
+                if (changeButton) {
+                    // Check if button is enabled
+                    const isDisabled = await changeButton.evaluate(btn => btn.disabled);
+                    if (!isDisabled) {
+                        await changeButton.click();
+                        console.log(`     [Drug Coverage] Changed to: ${option.label}`);
+                        await page.waitForTimeout(1000); // Wait for content to update
+                    } else {
+                        console.log(`     [Drug Coverage] Change button is disabled`);
+                        continue;
+                    }
+                } else {
+                    console.log(`     [Drug Coverage] Change button not found`);
+                    continue;
+                }
+
+                // Step 4: Extract tier data for this option
+                const tierData = await extractCurrentTierData(page);
+
+                // Create a clean key from the option label
+                const key = option.label
+                    .toLowerCase()
+                    .replace(/drug cost for/gi, '')
+                    .replace(/pharmacy/gi, '')
+                    .trim()
+                    .replace(/\s+/g, '_');
+
+                drugCoverageByPharmacy[key] = {
+                    label: option.label,
+                    tiers: tierData
                 };
 
-                const tiersTable = document.querySelector('#CostsByDrugTierTable');
-                if (!tiersTable) return [];
-
-                const tiers = [];
-                const rows = tiersTable.querySelectorAll('tbody tr');
-                rows.forEach(row => {
-                    const thEl = row.querySelector('th');
-                    const initialEl = row.querySelector('[data-testid*="initial_coverage"]');
-                    const catastrophicEl = row.querySelector('[data-testid*="catastrophic"]');
-                    if (thEl) {
-                        tiers.push({
-                            tier: getTextWithLineBreaks(thEl),
-                            initialCoverage: getTextWithLineBreaks(initialEl),
-                            catastrophic: getTextWithLineBreaks(catastrophicEl)
-                        });
-                    }
-                });
-                return tiers;
-            });
-
-            // Create a clean key from the option label
-            const key = option.label
-                .toLowerCase()
-                .replace(/drug cost for/gi, '')
-                .replace(/pharmacy/gi, '')
-                .trim()
-                .replace(/\s+/g, '_');
-
-            drugCoverageByPharmacy[key] = {
-                label: option.label,
-                tiers: tierData
-            };
+            } catch (optionErr) {
+                console.log(`     [Drug Coverage] Error with option ${option.label}: ${optionErr.message}`);
+            }
         }
 
         return { tiersByPharmacy: drugCoverageByPharmacy };
@@ -561,6 +620,47 @@ async function extractDrugCoverageWithDropdown(page) {
         console.error('Error extracting drug coverage with dropdown:', err.message);
         return null;
     }
+}
+
+/**
+ * Extract current tier data from the page
+ * @param {import('playwright').Page} page - Playwright page object
+ * @returns {Promise<Array>} Array of tier data
+ */
+async function extractCurrentTierData(page) {
+    return await page.evaluate(() => {
+        const getTextWithLineBreaks = (element) => {
+            if (!element) return null;
+            const clone = element.cloneNode(true);
+            clone.querySelectorAll('br').forEach(br => br.replaceWith('\n'));
+            clone.querySelectorAll('.mct-c-collapsible__contentOuter, .mct-c-collapsible__content-outer').forEach(collapsible => {
+                const separator = document.createTextNode(' - ');
+                collapsible.parentNode.insertBefore(separator, collapsible);
+            });
+            let text = clone.textContent.trim();
+            text = text.replace(/\n\s+/g, '\n').replace(/\s+/g, ' ');
+            return text;
+        };
+
+        const tiersTable = document.querySelector('#CostsByDrugTierTable');
+        if (!tiersTable) return [];
+
+        const tiers = [];
+        const rows = tiersTable.querySelectorAll('tbody tr');
+        rows.forEach(row => {
+            const thEl = row.querySelector('th');
+            const initialEl = row.querySelector('[data-testid*="initial_coverage"]');
+            const catastrophicEl = row.querySelector('[data-testid*="catastrophic"]');
+            if (thEl) {
+                tiers.push({
+                    tier: getTextWithLineBreaks(thEl),
+                    initialCoverage: getTextWithLineBreaks(initialEl),
+                    catastrophic: getTextWithLineBreaks(catastrophicEl)
+                });
+            }
+        });
+        return tiers;
+    });
 }
 
 /**
