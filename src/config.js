@@ -20,7 +20,7 @@ export const config = {
     // Crawler settings
     maxConcurrency: 1, // Process one zipcode at a time to avoid rate limiting
     maxRequestRetries: 3,
-    requestHandlerTimeoutSecs: 300, // 5 minutes per request
+    requestHandlerTimeoutSecs: 600, // 10 minutes per request (for large zipcodes)
 
     // Browser settings
     headless: false, // Set to false for debugging (visible browser)

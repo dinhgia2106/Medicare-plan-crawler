@@ -374,11 +374,27 @@ async function extractAllPlans(page, zipcodeInfo) {
     // ============================================
     console.log('>>> PHASE 2: Extracting details for each plan...\n');
 
+    let browserClosed = false;
+
     for (let i = 0; i < planSummaries.length; i++) {
         const plan = planSummaries[i];
         const planId = plan.planId || 'N/A';
 
         console.log(`  [${i + 1}/${planSummaries.length}] ${plan.planName || 'Unknown'} (${planId})`);
+
+        // Check if browser/page is still alive before proceeding
+        if (browserClosed || !(await isPageAlive(page))) {
+            console.log(`     [SKIPPED] Browser/page closed - marking as failed`);
+            allPlans.push({
+                ...zipcodeInfo,
+                ...plan,
+                details: null,
+                error: 'Browser context closed before extraction',
+                scrapedAt: new Date().toISOString()
+            });
+            browserClosed = true;
+            continue;
+        }
 
         try {
             if (plan.detailsUrl) {
@@ -414,6 +430,13 @@ async function extractAllPlans(page, zipcodeInfo) {
             }
         } catch (err) {
             console.error(`     [ERROR] ${err.message}`);
+
+            // Check if this is a browser closure error
+            if (isBrowserClosedError(err)) {
+                console.log(`     [!] Browser context closed - remaining plans will be marked as failed`);
+                browserClosed = true;
+            }
+
             allPlans.push({
                 ...zipcodeInfo,
                 ...plan,
@@ -425,10 +448,16 @@ async function extractAllPlans(page, zipcodeInfo) {
     }
 
     // Final summary
+    const successCount = allPlans.filter(p => !p.error).length;
+    const failedCount = allPlans.filter(p => p.error).length;
+
     console.log('\n' + '='.repeat(60));
     console.log(`CRAWL COMPLETE: ${zipcodeInfo.zipcode}`);
     console.log(`Plans: ${allPlans.length} | Unique IDs: ${processedPlanIds.size}`);
-    console.log(`Success: ${allPlans.filter(p => !p.error).length}/${allPlans.length}`);
+    console.log(`Success: ${successCount}/${allPlans.length} | Failed: ${failedCount}`);
+    if (browserClosed) {
+        console.log(`[!] Browser closed during extraction - some plans may need re-crawling`);
+    }
     console.log('='.repeat(60) + '\n');
 
     return allPlans;
@@ -483,6 +512,39 @@ async function clickPaginationButton(page, targetPage) {
         console.error(`  Error navigating to page ${targetPage}:`, err.message);
         return false;
     }
+}
+
+/**
+ * Check if the page/browser context is still alive
+ * @param {import('playwright').Page} page - Playwright page object
+ * @returns {Promise<boolean>} True if page is alive
+ */
+async function isPageAlive(page) {
+    try {
+        // Try a simple operation to check if page is still responsive
+        await page.evaluate(() => true);
+        return true;
+    } catch (err) {
+        // If this fails, the page/browser is closed
+        return false;
+    }
+}
+
+/**
+ * Check if an error indicates browser/page closure
+ * @param {Error} err - The error object
+ * @returns {boolean} True if error indicates closure
+ */
+function isBrowserClosedError(err) {
+    const closureMessages = [
+        'Target page, context or browser has been closed',
+        'Target closed',
+        'Browser has been closed',
+        'Context has been closed',
+        'Connection closed',
+        'Protocol error'
+    ];
+    return closureMessages.some(msg => err.message.includes(msg));
 }
 
 /**

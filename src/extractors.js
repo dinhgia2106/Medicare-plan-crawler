@@ -200,8 +200,6 @@ export async function extractPlanDetails(page) {
             // Basic Info
             const planName = getText('h1.e2e-plan-details-plan-header, .PlanDetailsPagePlanInfo h1');
             const planType = getText('.PlanDetailsPagePlanInfo .e2e-plan-details-plan-type');
-            const planIdElement = document.querySelector('.PlanDetailsPagePlanInfo .PlanDetailsPagePlanInfo__value');
-            const planId = planIdElement ? planIdElement.textContent.trim() : null;
             const carrier = getText('.PlanDetailsPagePlanInfo h2');
 
             // Contact Info
@@ -436,7 +434,6 @@ export async function extractPlanDetails(page) {
                 // Basic Info
                 planName,
                 planType,
-                planId,
                 carrier,
 
                 // Contact
@@ -473,9 +470,20 @@ export async function extractPlanDetails(page) {
         });
 
         // Handle Drug Coverage dropdown - need to interact with page for each option
-        const drugCoverageWithOptions = await extractDrugCoverageWithDropdown(page);
-        if (drugCoverageWithOptions) {
-            details.drugCoverage = drugCoverageWithOptions;
+        // Wrap in timeout to prevent blocking (max 60 seconds for all dropdown options)
+        try {
+            const drugCoverageWithOptions = await Promise.race([
+                extractDrugCoverageWithDropdown(page),
+                new Promise((_, reject) =>
+                    setTimeout(() => reject(new Error('Drug coverage extraction timeout')), 60000)
+                )
+            ]);
+            if (drugCoverageWithOptions) {
+                details.drugCoverage = drugCoverageWithOptions;
+            }
+        } catch (drugErr) {
+            console.log(`     [Drug Coverage] ${drugErr.message} - using basic data`);
+            // Keep the basic drugCoverage data from page.evaluate()
         }
 
         return details;
