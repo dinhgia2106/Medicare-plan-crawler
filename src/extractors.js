@@ -231,7 +231,7 @@ export async function extractPlanDetails(page) {
                 });
             }
 
-            // Helper function to get text with <br> converted to \n and collapsible content separated
+            // Helper function to get text with <br> converted to \n and extract collapsible content
             const getTextWithLineBreaks = (element) => {
                 if (!element) return null;
                 // Clone the element to avoid modifying the DOM
@@ -242,25 +242,19 @@ export async function extractPlanDetails(page) {
                     br.replaceWith('\n');
                 });
 
-                // Add separator before collapsible/dropdown content
-                const collapsibleSelectors = [
-                    '.mct-c-collapsible__contentOuter',
-                    '.mct-c-collapsible__content-outer',
-                    '.mct-c-collapsible__contentInner',
-                    '.mct-c-collapsible__content-inner'
-                ];
-                collapsibleSelectors.forEach(selector => {
-                    clone.querySelectorAll(selector).forEach(collapsible => {
-                        // Insert separator text node before the collapsible content
-                        const separator = document.createTextNode(' - ');
-                        collapsible.parentNode.insertBefore(separator, collapsible);
-                    });
-                });
+                // Check if this element has collapsible content (like "Limits apply")
+                const collapsibleContent = clone.querySelector('.mct-c-collapsible__contentInner, .mct-c-collapsible__content-inner');
+                if (collapsibleContent) {
+                    // For elements with collapsible, only return the inner content (the actual limit description)
+                    let text = collapsibleContent.textContent.trim();
+                    text = text.replace(/\n\s+/g, '\n').replace(/\s+/g, ' ');
+                    return text || null;
+                }
 
-                // Get text and clean up
+                // For regular elements without collapsible, return all text
                 let text = clone.textContent.trim();
                 // Clean up multiple spaces and normalize line breaks
-                text = text.replace(/\n\s+/g, '\n').replace(/\s+/g, ' ').replace(/ - /g, ' - ');
+                text = text.replace(/\n\s+/g, '\n').replace(/\s+/g, ' ');
                 return text;
             };
 
@@ -633,10 +627,15 @@ async function extractCurrentTierData(page) {
             if (!element) return null;
             const clone = element.cloneNode(true);
             clone.querySelectorAll('br').forEach(br => br.replaceWith('\n'));
-            clone.querySelectorAll('.mct-c-collapsible__contentOuter, .mct-c-collapsible__content-outer').forEach(collapsible => {
-                const separator = document.createTextNode(' - ');
-                collapsible.parentNode.insertBefore(separator, collapsible);
-            });
+
+            // Check if this element has collapsible content
+            const collapsibleContent = clone.querySelector('.mct-c-collapsible__contentInner, .mct-c-collapsible__content-inner');
+            if (collapsibleContent) {
+                let text = collapsibleContent.textContent.trim();
+                text = text.replace(/\n\s+/g, '\n').replace(/\s+/g, ' ');
+                return text || null;
+            }
+
             let text = clone.textContent.trim();
             text = text.replace(/\n\s+/g, '\n').replace(/\s+/g, ' ');
             return text;
