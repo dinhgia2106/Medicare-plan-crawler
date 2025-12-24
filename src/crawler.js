@@ -17,92 +17,151 @@ async function navigateWizard(page, zipcode) {
     console.log(`\n=== Navigating wizard for zipcode: ${zipcode} ===`);
 
     try {
-        // Step 1: Enter zipcode
-        console.log('Step 1: Entering zipcode...');
+        // Wait for page to stabilize
+        await page.waitForLoadState('domcontentloaded', { timeout: config.timeouts.navigation });
+        await sleep(config.delays.afterPageLoad);
 
-        // Wait for the zipcode input to be available
-        const zipcodeInput = await page.waitForSelector(
-            'input[id*="zip"], input[name*="zip"], input[placeholder*="ZIP"], #zipcode',
-            { timeout: config.timeouts.element }
-        );
+        // Take screenshot of initial page for debugging
+        console.log('Current URL:', page.url());
+
+        // Step 1: Enter zipcode
+        console.log('Step 1: Looking for zipcode input...');
+
+        // Try multiple selectors for zipcode input
+        const zipcodeSelectors = [
+            '#zip-code',
+            'input[id*="zip"]',
+            'input[name*="zip"]',
+            'input[placeholder*="ZIP"]',
+            'input[aria-label*="ZIP"]',
+            'input[type="text"]'
+        ];
+
+        let zipcodeInput = null;
+        for (const selector of zipcodeSelectors) {
+            try {
+                zipcodeInput = await page.$(selector);
+                if (zipcodeInput) {
+                    console.log(`  Found zipcode input using: ${selector}`);
+                    break;
+                }
+            } catch {
+                continue;
+            }
+        }
+
+        if (!zipcodeInput) {
+            // Log page content for debugging
+            const pageContent = await page.content();
+            console.log('Page HTML snippet:', pageContent.substring(0, 2000));
+            throw new Error('Could not find zipcode input field');
+        }
 
         // Clear and enter zipcode
         await zipcodeInput.click({ clickCount: 3 });
         await zipcodeInput.fill(zipcode);
+        console.log(`  Entered zipcode: ${zipcode}`);
         await sleep(config.delays.betweenActions);
 
         // Step 2: Select Medicare Advantage Plan (Part C)
-        console.log('Step 2: Selecting Medicare Advantage Plan...');
+        console.log('Step 2: Looking for Medicare Advantage option...');
 
-        // Look for plan type selector - could be dropdown, radio, or button
         const planTypeSelectors = [
+            'label:has-text("Medicare Advantage")',
             'text=Medicare Advantage',
-            'text=Medicare Advantage Plan',
-            'text=Part C',
-            '[data-value*="MA"], [data-value*="advantage"]',
-            'input[type="radio"][value*="MA"]',
-            'label:has-text("Medicare Advantage")'
+            '[data-value*="MAPD"]',
+            '[data-value*="MA"]',
+            'input[type="radio"][id*="ma"]',
+            'input[type="radio"][id*="advantage"]',
+            '.plan-type-option:has-text("Medicare Advantage")',
+            'button:has-text("Medicare Advantage")'
         ];
 
+        let planTypeSelected = false;
         for (const selector of planTypeSelectors) {
             try {
                 const element = await page.$(selector);
                 if (element) {
                     await element.click();
                     console.log(`  Selected plan type using: ${selector}`);
+                    planTypeSelected = true;
                     break;
                 }
-            } catch {
+            } catch (e) {
+                console.log(`  Selector ${selector} failed: ${e.message}`);
                 continue;
             }
+        }
+
+        if (!planTypeSelected) {
+            console.log('  Warning: Could not find Medicare Advantage selector, continuing anyway...');
         }
 
         await sleep(config.delays.betweenActions);
 
-        // Step 3: Click Find Plans
-        console.log('Step 3: Clicking Find Plans...');
+        // Step 3: Click Find Plans / Submit
+        console.log('Step 3: Clicking Find Plans / Submit...');
 
         const findPlansSelectors = [
             'button:has-text("Find Plans")',
-            'button:has-text("Search")',
+            'button:has-text("Search Plans")',
+            'button:has-text("Get Started")',
+            'button:has-text("Continue")',
             'button[type="submit"]',
             'a:has-text("Find Plans")',
-            '[data-testid*="find"], [data-testid*="search"]'
+            '[data-testid*="find"]',
+            '[data-testid*="submit"]'
         ];
 
+        let clicked = false;
         for (const selector of findPlansSelectors) {
             try {
                 const button = await page.$(selector);
                 if (button) {
-                    await button.click();
-                    console.log(`  Clicked using: ${selector}`);
-                    break;
+                    const isVisible = await button.isVisible();
+                    if (isVisible) {
+                        await button.click();
+                        console.log(`  Clicked using: ${selector}`);
+                        clicked = true;
+                        break;
+                    }
                 }
             } catch {
                 continue;
             }
         }
 
-        await page.waitForLoadState('networkidle', { timeout: config.timeouts.navigation });
-        await sleep(config.delays.afterPageLoad);
+        if (!clicked) {
+            throw new Error('Could not find Find Plans button');
+        }
 
-        // Step 4: Handle "I don't get help" question
-        console.log('Step 4: Selecting help status...');
+        // Wait for navigation - use domcontentloaded instead of networkidle
+        console.log('  Waiting for page navigation...');
+        await page.waitForLoadState('domcontentloaded', { timeout: config.timeouts.navigation });
+        await sleep(config.delays.afterPageLoad);
+        console.log('  Current URL after submit:', page.url());
+
+        // Step 4: Handle "I don't get help" question (if present)
+        console.log('Step 4: Looking for help status question...');
 
         const noHelpSelectors = [
-            'text=I don\'t get help',
-            'text=No, I don\'t',
+            'label:has-text("I don\'t get help")',
             'label:has-text("don\'t get help")',
-            'input[value*="no"]:near(text="help")'
+            'text=I don\'t get help',
+            'input[value*="no_help"]',
+            '[data-testid*="no-help"]'
         ];
 
         for (const selector of noHelpSelectors) {
             try {
                 const element = await page.$(selector);
                 if (element) {
-                    await element.click();
-                    console.log(`  Selected no help using: ${selector}`);
-                    break;
+                    const isVisible = await element.isVisible();
+                    if (isVisible) {
+                        await element.click();
+                        console.log(`  Selected no help using: ${selector}`);
+                        break;
+                    }
                 }
             } catch {
                 continue;
@@ -111,28 +170,30 @@ async function navigateWizard(page, zipcode) {
 
         await sleep(config.delays.betweenActions);
 
-        // Click Continue
-        await clickButton(page, ['Continue', 'Next']);
-        await page.waitForLoadState('networkidle', { timeout: config.timeouts.navigation });
+        // Click Continue if present
+        await clickContinueButton(page);
         await sleep(config.delays.afterPageLoad);
 
         // Step 5: Handle "Do you want to see drugs" question - Select No
-        console.log('Step 5: Answering drug coverage question...');
+        console.log('Step 5: Looking for drug coverage question...');
 
         const noDrugSelectors = [
-            'text=No',
-            'label:has-text("No")',
-            'input[type="radio"][value="no"]',
-            'input[type="radio"][value="false"]'
+            'label:has-text("No, I")',
+            'text=No, I don\'t',
+            'input[value="no"]',
+            'input[type="radio"]:near(:text("No"))'
         ];
 
         for (const selector of noDrugSelectors) {
             try {
                 const element = await page.$(selector);
                 if (element) {
-                    await element.click();
-                    console.log(`  Selected No using: ${selector}`);
-                    break;
+                    const isVisible = await element.isVisible();
+                    if (isVisible) {
+                        await element.click();
+                        console.log(`  Selected No using: ${selector}`);
+                        break;
+                    }
                 }
             } catch {
                 continue;
@@ -141,45 +202,84 @@ async function navigateWizard(page, zipcode) {
 
         await sleep(config.delays.betweenActions);
 
-        // Click Next
-        await clickButton(page, ['Next', 'Continue']);
-        await page.waitForLoadState('networkidle', { timeout: config.timeouts.navigation });
+        // Click Next/Continue
+        await clickContinueButton(page);
         await sleep(config.delays.afterPageLoad);
 
         // Step 6: Skip Adding Providers
-        console.log('Step 6: Skipping providers...');
+        console.log('Step 6: Looking for skip providers option...');
 
         const skipSelectors = [
-            'text=Skip',
             'a:has-text("Skip")',
             'button:has-text("Skip")',
             'text=Skip this step',
-            'text=Continue without'
+            'a:has-text("Continue without")',
+            'button:has-text("Continue without")'
         ];
 
         for (const selector of skipSelectors) {
             try {
                 const element = await page.$(selector);
                 if (element) {
-                    await element.click();
-                    console.log(`  Skipped using: ${selector}`);
-                    break;
+                    const isVisible = await element.isVisible();
+                    if (isVisible) {
+                        await element.click();
+                        console.log(`  Skipped using: ${selector}`);
+                        break;
+                    }
                 }
             } catch {
                 continue;
             }
         }
 
-        await page.waitForLoadState('networkidle', { timeout: config.timeouts.navigation });
+        await page.waitForLoadState('domcontentloaded', { timeout: config.timeouts.navigation });
         await sleep(config.delays.afterPageLoad);
 
-        console.log('Wizard navigation completed successfully!');
+        console.log('Wizard navigation completed!');
+        console.log('Final URL:', page.url());
         return true;
 
     } catch (err) {
         console.error(`Wizard navigation failed: ${err.message}`);
+        // Take screenshot on error for debugging
+        try {
+            await page.screenshot({ path: './output/error_screenshot.png' });
+            console.log('Error screenshot saved to ./output/error_screenshot.png');
+        } catch { }
         return false;
     }
+}
+
+/**
+ * Helper function to click Continue/Next button
+ */
+async function clickContinueButton(page) {
+    const continueSelectors = [
+        'button:has-text("Continue")',
+        'button:has-text("Next")',
+        'a:has-text("Continue")',
+        'a:has-text("Next")',
+        'button[type="submit"]'
+    ];
+
+    for (const selector of continueSelectors) {
+        try {
+            const button = await page.$(selector);
+            if (button) {
+                const isVisible = await button.isVisible();
+                if (isVisible) {
+                    await button.click();
+                    console.log(`  Clicked continue/next: ${selector}`);
+                    await page.waitForLoadState('domcontentloaded', { timeout: config.timeouts.navigation });
+                    return true;
+                }
+            }
+        } catch {
+            continue;
+        }
+    }
+    return false;
 }
 
 /**

@@ -5,20 +5,20 @@
 export const config = {
     // Base URL for Medicare Plan Compare
     baseUrl: 'https://www.medicare.gov/plan-compare/#/?year=2026&lang=en',
-    
+
     // Input/Output paths
     inputFile: './ZipCodes.csv',
     outputDir: './output',
-    
+
     // Crawler settings
     maxConcurrency: 1, // Process one zipcode at a time to avoid rate limiting
     maxRequestRetries: 3,
     requestHandlerTimeoutSecs: 300, // 5 minutes per request
-    
+
     // Browser settings
-    headless: true, // Set to false for debugging
-    slowMo: 100, // Slow down actions by 100ms
-    
+    headless: false, // Set to false for debugging (visible browser)
+    slowMo: 150, // Slow down actions by 150ms for better visibility
+
     // Delay settings (in milliseconds)
     delays: {
         betweenActions: { min: 1000, max: 2000 },
@@ -26,14 +26,14 @@ export const config = {
         betweenPlans: { min: 500, max: 1000 },
         betweenZipcodes: { min: 3000, max: 5000 }
     },
-    
+
     // Timeouts
     timeouts: {
-        navigation: 60000,
+        navigation: 90000,  // 90 seconds for slow page loads
         element: 30000,
         planLoad: 45000
     },
-    
+
     // Selectors (these may need adjustment based on actual site structure)
     selectors: {
         // Initial page
@@ -41,23 +41,23 @@ export const config = {
         planTypeDropdown: 'select[id*="planType"], [data-testid*="plan-type"]',
         planTypeOption: 'Medicare Advantage Plan',
         findPlansButton: 'button:has-text("Find Plans"), [data-testid*="find-plans"]',
-        
+
         // Help question page
         noHelpOption: 'input[type="radio"][value*="no"], label:has-text("I don\'t get help")',
         continueButton: 'button:has-text("Continue")',
-        
+
         // Drug coverage question
         noDrugsOption: 'input[type="radio"][value="no"], label:has-text("No")',
         nextButton: 'button:has-text("Next")',
-        
+
         // Providers page
         skipProvidersButton: 'button:has-text("Skip"), a:has-text("Skip")',
-        
+
         // Plan listing
         planCards: '[data-testid*="plan-card"], .plan-card, [class*="PlanCard"]',
         planName: '[data-testid*="plan-name"], .plan-name, h2, h3',
         planDetailsLink: 'a:has-text("Plan Details"), button:has-text("View Details")',
-        
+
         // Pagination
         nextPageButton: 'button:has-text("Next"), [aria-label*="next page"]',
         paginationInfo: '[class*="pagination"], [data-testid*="pagination"]'
