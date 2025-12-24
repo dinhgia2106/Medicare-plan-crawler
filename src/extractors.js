@@ -316,9 +316,9 @@ export async function extractPlanDetails(page) {
                             const tds = row.querySelectorAll('td');
                             if (th && tds.length > 0) {
                                 benefitsCosts[sectionName].push({
-                                    service: th.textContent.trim(),
-                                    cost: tds[0] ? tds[0].textContent.trim() : null,
-                                    limits: tds[1] ? tds[1].textContent.trim() : null
+                                    service: getTextWithLineBreaks(th),
+                                    cost: tds[0] ? getTextWithLineBreaks(tds[0]) : null,
+                                    limits: tds[1] ? getTextWithLineBreaks(tds[1]) : null
                                 });
                             }
                         });
@@ -336,14 +336,14 @@ export async function extractPlanDetails(page) {
                     drugCoverage.tiers = [];
                     const rows = tiersTable.querySelectorAll('tbody tr');
                     rows.forEach(row => {
-                        const tierName = getText('th', row);
-                        const initialCoverage = getText('[data-testid*="initial_coverage"]', row);
-                        const catastrophic = getText('[data-testid*="catastrophic"]', row);
-                        if (tierName) {
+                        const thEl = row.querySelector('th');
+                        const initialEl = row.querySelector('[data-testid*="initial_coverage"]');
+                        const catastrophicEl = row.querySelector('[data-testid*="catastrophic"]');
+                        if (thEl) {
                             drugCoverage.tiers.push({
-                                tier: tierName,
-                                initialCoverage,
-                                catastrophic
+                                tier: getTextWithLineBreaks(thEl),
+                                initialCoverage: getTextWithLineBreaks(initialEl),
+                                catastrophic: getTextWithLineBreaks(catastrophicEl)
                             });
                         }
                     });
@@ -363,11 +363,11 @@ export async function extractPlanDetails(page) {
                         const rows = table.querySelectorAll('tbody tr');
                         rows.forEach(row => {
                             const th = row.querySelector('th');
-                            const td = row.querySelector('td .mct-c-benefit');
+                            const td = row.querySelector('td .mct-c-benefit') || row.querySelector('td');
                             if (th) {
                                 extraBenefits[sectionName].push({
-                                    benefit: th.textContent.trim(),
-                                    coverage: td ? td.textContent.trim() : 'Not covered'
+                                    benefit: getTextWithLineBreaks(th),
+                                    coverage: td ? getTextWithLineBreaks(td) : 'Not covered'
                                 });
                             }
                         });
