@@ -27,3 +27,6 @@ plan*
 
 /temp
 *.zip
+/final
+/final_output
+test.*
