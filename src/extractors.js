@@ -214,6 +214,37 @@ export async function extractPlanDetails(page) {
                 memberPhone = getText('#members-number', planContactSection);
             }
 
+            // Helper to extract text with proper formatting (handles br tags, block elements)
+            const extractFormattedText = (element) => {
+                if (!element) return null;
+                let html = element.innerHTML;
+
+                // Replace <br> tags with newline
+                html = html.replace(/<br\s*\/?>/gi, '\n');
+                // Replace closing block tags with newline
+                html = html.replace(/<\/(div|p|li|span)>/gi, '\n');
+                // Remove remaining HTML tags
+                html = html.replace(/<[^>]+>/g, '');
+
+                // Decode HTML entities
+                const textarea = document.createElement('textarea');
+                textarea.innerHTML = html;
+                let text = textarea.value;
+
+                // Clean up
+                text = text
+                    .replace(/[ \t]+/g, ' ')
+                    .replace(/ ?\n ?/g, '\n')
+                    .replace(/\n{2,}/g, '\n')
+                    .trim();
+
+                // Post-processing fixes
+                text = text.replace(/(\$[\d,.]+)(copay|coinsurance)/gi, '$1 $2');
+                text = text.replace(/(In-network:|Out-of-network:)(\S)/gi, '$1 $2');
+
+                return text || null;
+            };
+
             // What you'll pay (summary)
             const whatYouPaySection = document.querySelector('.mct-c-what-youll-pay');
             let whatYouPay = {};
@@ -224,7 +255,7 @@ export async function extractPlanDetails(page) {
                     const value = feature.querySelector('dd .mct-c-benefit, dd .mct-c-what-youll-pay__cost');
                     if (label && value) {
                         const key = label.textContent.trim().toLowerCase().replace(/\s+/g, '_');
-                        whatYouPay[key] = value.textContent.trim();
+                        whatYouPay[key] = extractFormattedText(value);
                     }
                 });
             }
@@ -232,36 +263,82 @@ export async function extractPlanDetails(page) {
             // Helper function to get text with <br> converted to \n and extract collapsible content
             const getTextWithLineBreaks = (element) => {
                 if (!element) return null;
-                // Clone the element to avoid modifying the DOM
-                const clone = element.cloneNode(true);
-
-                // Replace <br> tags with newline markers
-                clone.querySelectorAll('br').forEach(br => {
-                    br.replaceWith('\n');
-                });
 
                 // Check if this element has collapsible content (like "Limits apply")
-                const collapsibleContent = clone.querySelector('.mct-c-collapsible__contentInner, .mct-c-collapsible__content-inner');
-                if (collapsibleContent) {
-                    // Add newline before each ds-u-margin-y--2 div (except the first one)
-                    const marginDivs = collapsibleContent.querySelectorAll('.ds-u-margin-y--2');
-                    marginDivs.forEach((div, index) => {
-                        if (index > 0) {
-                            // Insert newline before this div
-                            div.insertBefore(document.createTextNode('\n'), div.firstChild);
-                        }
-                    });
+                const collapsibleContent = element.querySelector('.mct-c-collapsible__contentInner, .mct-c-collapsible__content-inner');
+                const targetElement = collapsibleContent || element;
 
-                    // For elements with collapsible, only return the inner content (the actual limit description)
-                    let text = collapsibleContent.textContent.trim();
-                    text = text.replace(/\n\s+/g, '\n').replace(/  +/g, ' ');
-                    return text || null;
+                // Get innerHTML and process it
+                let html = targetElement.innerHTML;
+
+                // Replace <br>, <br/>, <br /> with newline placeholder
+                html = html.replace(/<br\s*\/?>/gi, '\n');
+
+                // Replace closing block tags with newline (div, p, li, etc.)
+                html = html.replace(/<\/(div|p|li|tr)>/gi, '\n');
+
+                // Replace opening block tags that might create visual breaks
+                html = html.replace(/<(div|p|li)[^>]*>/gi, '');
+
+                // Remove all remaining HTML tags
+                html = html.replace(/<[^>]+>/g, '');
+
+                // Decode HTML entities
+                const textarea = document.createElement('textarea');
+                textarea.innerHTML = html;
+                let text = textarea.value;
+
+                // Clean up:
+                // - Replace multiple spaces/tabs with single space
+                // - Trim spaces around newlines
+                // - Remove multiple consecutive newlines
+                // - Trim the whole string
+                text = text
+                    .replace(/[ \t]+/g, ' ')      // Multiple spaces -> single space
+                    .replace(/ ?\n ?/g, '\n')     // Trim spaces around newlines
+                    .replace(/\n{2,}/g, '\n')     // Multiple newlines -> single newline
+                    .trim();
+
+                // Post-processing fixes for common formatting issues:
+
+                // 1. Add space between dollar amounts and copay/coinsurance
+                // "$0copay" -> "$0 copay", "$100coinsurance" -> "$100 coinsurance"
+                text = text.replace(/(\$[\d,.]+)(copay|coinsurance)/gi, '$1 $2');
+
+                // 2. Add newline after Tier labels when followed by dollar amounts
+                // "Tier 1$325" -> "Tier 1\n$325"
+                text = text.replace(/(Tier\s*\d+)\s*(\$)/gi, '$1\n$2');
+
+                // 3. Add space after "In-network:" or "Out-of-network:" if missing
+                text = text.replace(/(In-network:|Out-of-network:)(\S)/gi, '$1 $2');
+
+                return text || null;
+            };
+
+            // Helper function to get the label text from a table header (th)
+            // Handles collapsible triggers to get only the label, not the description
+            const getHeaderLabel = (thElement) => {
+                if (!thElement) return '';
+
+                // First, check for collapsible trigger label (like "Diagnostic tests & procedures")
+                const triggerLabel = thElement.querySelector('.mct-c-collapsible__trigger-label');
+                if (triggerLabel) {
+                    return triggerLabel.textContent.trim();
                 }
 
-                // For regular elements without collapsible, return all text
-                let text = clone.textContent.trim();
-                // Clean up multiple spaces and normalize line breaks
-                text = text.replace(/\n\s+/g, '\n').replace(/\s+/g, ' ');
+                // Clone and remove unwanted elements
+                const thClone = thElement.cloneNode(true);
+                // Remove help drawer toggles
+                thClone.querySelectorAll('.ds-c-help-drawer__toggle').forEach(btn => btn.remove());
+                // Remove collapsible content (the description that appears when expanded)
+                thClone.querySelectorAll('.mct-c-collapsible__contentOuter, .mct-c-collapsible__contentInner, .mct-c-collapsible__content-inner').forEach(el => el.remove());
+                // Remove any hidden description elements
+                thClone.querySelectorAll('[aria-hidden="true"]').forEach(el => el.remove());
+
+                // Get the text, taking only the first line if there are multiple
+                let text = thClone.textContent.trim();
+                // Take only first line (before any newline)
+                text = text.split('\n')[0].trim();
                 return text;
             };
 
@@ -337,7 +414,7 @@ export async function extractPlanDetails(page) {
                             const tds = row.querySelectorAll('td');
                             if (th && tds.length > 0) {
                                 benefitsCosts[sectionName].push({
-                                    service: getTextWithLineBreaks(th),
+                                    service: getHeaderLabel(th),
                                     cost: tds[0] ? getTextWithLineBreaks(tds[0]) : null,
                                     limits: tds[1] ? getTextWithLineBreaks(tds[1]) : null
                                 });
@@ -382,7 +459,7 @@ export async function extractPlanDetails(page) {
                             const tds = row.querySelectorAll('td');
                             if (thEl) {
                                 drugCoverage.partBDrugs.push({
-                                    drug: getTextWithLineBreaks(thEl),
+                                    drug: getHeaderLabel(thEl),
                                     cost: tds[0] ? getTextWithLineBreaks(tds[0]) : null,
                                     limits: tds[1] ? getTextWithLineBreaks(tds[1]) : null
                                 });
@@ -412,7 +489,7 @@ export async function extractPlanDetails(page) {
                                 const limitsTd = tds[1] || null;
 
                                 extraBenefits[sectionName].push({
-                                    benefit: getTextWithLineBreaks(th),
+                                    benefit: getHeaderLabel(th),
                                     coverage: coverageTd ? getTextWithLineBreaks(coverageTd) : 'Not covered',
                                     limits: limitsTd ? getTextWithLineBreaks(limitsTd) : null
                                 });
@@ -479,7 +556,12 @@ export async function extractPlanDetails(page) {
                 )
             ]);
             if (drugCoverageWithOptions) {
-                details.drugCoverage = drugCoverageWithOptions;
+                // MERGE with existing drugCoverage instead of replacing
+                // This preserves partBDrugs and other data extracted during page.evaluate()
+                details.drugCoverage = {
+                    ...details.drugCoverage,  // Keep partBDrugs, tiers from basic extraction
+                    ...drugCoverageWithOptions  // Add tiersByPharmacy from dropdown extraction
+                };
             }
         } catch (drugErr) {
             console.log(`     [Drug Coverage] ${drugErr.message} - using basic data`);
@@ -647,28 +729,44 @@ async function extractCurrentTierData(page) {
     return await page.evaluate(() => {
         const getTextWithLineBreaks = (element) => {
             if (!element) return null;
-            const clone = element.cloneNode(true);
-            clone.querySelectorAll('br').forEach(br => br.replaceWith('\n'));
 
             // Check if this element has collapsible content
-            const collapsibleContent = clone.querySelector('.mct-c-collapsible__contentInner, .mct-c-collapsible__content-inner');
-            if (collapsibleContent) {
-                // Add newline before each ds-u-margin-y--2 div (except the first one)
-                const marginDivs = collapsibleContent.querySelectorAll('.ds-u-margin-y--2');
-                marginDivs.forEach((div, index) => {
-                    if (index > 0) {
-                        div.insertBefore(document.createTextNode('\n'), div.firstChild);
-                    }
-                });
+            const collapsibleContent = element.querySelector('.mct-c-collapsible__contentInner, .mct-c-collapsible__content-inner');
+            const targetElement = collapsibleContent || element;
 
-                let text = collapsibleContent.textContent.trim();
-                text = text.replace(/\n\s+/g, '\n').replace(/  +/g, ' ');
-                return text || null;
-            }
+            // Get innerHTML and process it
+            let html = targetElement.innerHTML;
 
-            let text = clone.textContent.trim();
-            text = text.replace(/\n\s+/g, '\n').replace(/\s+/g, ' ');
-            return text;
+            // Replace <br>, <br/>, <br /> with newline
+            html = html.replace(/<br\s*\/?>/gi, '\n');
+
+            // Replace closing block tags with newline (div, p, li, etc.)
+            html = html.replace(/<\/(div|p|li|tr)>/gi, '\n');
+
+            // Replace opening block tags
+            html = html.replace(/<(div|p|li)[^>]*>/gi, '');
+
+            // Remove all remaining HTML tags
+            html = html.replace(/<[^>]+>/g, '');
+
+            // Decode HTML entities
+            const textarea = document.createElement('textarea');
+            textarea.innerHTML = html;
+            let text = textarea.value;
+
+            // Clean up
+            text = text
+                .replace(/[ \t]+/g, ' ')
+                .replace(/ ?\n ?/g, '\n')
+                .replace(/\n{2,}/g, '\n')
+                .trim();
+
+            // Post-processing fixes:
+            text = text.replace(/(\$[\d,.]+)(copay|coinsurance)/gi, '$1 $2');
+            text = text.replace(/(Tier\s*\d+)\s*(\$)/gi, '$1\n$2');
+            text = text.replace(/(In-network:|Out-of-network:)(\S)/gi, '$1 $2');
+
+            return text || null;
         };
 
         const tiersTable = document.querySelector('#CostsByDrugTierTable');

@@ -24,14 +24,13 @@ export const config = {
 
     // Browser settings
     headless: true, // Set to false for debugging (visible browser)
-    slowMo: 100, // Slow down actions by 100ms
+    slowMo: 50, // Reduced from 100ms for faster performance on powerful hardware
 
-    // Delay settings (in milliseconds)
     delays: {
-        betweenActions: { min: 500, max: 1000 },
-        afterPageLoad: { min: 2000, max: 3000 },
-        betweenPlans: { min: 1000, max: 2000 },
-        betweenZipcodes: { min: 3000, max: 5000 }
+        betweenActions: { min: 300, max: 600 },
+        afterPageLoad: { min: 1000, max: 1500 },
+        betweenPlans: { min: 500, max: 1000 },
+        betweenZipcodes: { min: 1500, max: 2500 }
     },
 
     // Timeouts

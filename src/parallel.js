@@ -24,7 +24,7 @@ import { exportErrors } from './exporters.js';
 import { existsSync } from 'fs';
 import * as readline from 'readline';
 
-const DEFAULT_WORKERS = 4;
+const DEFAULT_WORKERS = 10;  // Increased for high-performance systems (64GB RAM, RTX 5070 Ti, Ryzen 7500F)
 const STATE_FILE = 'crawler_state.json';
 const OUTPUT_JSON = 'medicare_plans.json';
 const OUTPUT_CSV_SUMMARY = 'medicare_plans_summary.csv';
@@ -39,7 +39,7 @@ let isShuttingDown = false;
 let isSaving = false;
 let saveQueue = [];
 let saveTimer = null;
-const SAVE_DEBOUNCE_MS = 2000;  // Batch saves every 2 seconds
+const SAVE_DEBOUNCE_MS = 1000;  // Batch saves every 1 second (faster with SSD)
 
 /**
  * Mutex lock for file writing
@@ -49,7 +49,7 @@ class WriteLock {
         this.locked = false;
         this.queue = [];
     }
-    
+
     async acquire() {
         return new Promise((resolve) => {
             if (!this.locked) {
@@ -60,7 +60,7 @@ class WriteLock {
             }
         });
     }
-    
+
     release() {
         if (this.queue.length > 0) {
             const next = this.queue.shift();
@@ -80,19 +80,19 @@ const writeLock = new WriteLock();
 async function atomicWriteFile(filePath, content) {
     const tempPath = `${filePath}.tmp`;
     const backupPath = `${filePath}.backup`;
-    
+
     try {
         // Write to temp file first
         await writeFile(tempPath, content, 'utf-8');
-        
+
         // If original exists, create backup
         if (existsSync(filePath)) {
             await copyFile(filePath, backupPath);
         }
-        
+
         // Atomic rename (this is atomic on most filesystems)
         await rename(tempPath, filePath);
-        
+
     } catch (err) {
         // If rename failed, try to restore from backup
         if (existsSync(backupPath) && !existsSync(filePath)) {
@@ -107,7 +107,7 @@ async function atomicWriteFile(filePath, content) {
  */
 function scheduleSave() {
     if (saveTimer) return;  // Already scheduled
-    
+
     saveTimer = setTimeout(async () => {
         saveTimer = null;
         await doSave();
@@ -119,18 +119,18 @@ function scheduleSave() {
  */
 async function doSave() {
     if (isShuttingDown) return;
-    
+
     await writeLock.acquire();
     try {
         isSaving = true;
-        
+
         const statePath = `${config.outputDir}/${STATE_FILE}`;
         state.metadata.lastUpdatedAt = new Date().toISOString();
         await atomicWriteFile(statePath, JSON.stringify(state, null, 2));
-        
+
         // Export outputs
         await doExportOutputs();
-        
+
     } catch (err) {
         console.error(`❌ Save error: ${err.message}`);
     } finally {
@@ -145,15 +145,15 @@ async function doSave() {
 async function gracefulShutdown(signal) {
     if (isShuttingDown) return;
     isShuttingDown = true;
-    
+
     console.log(`\n\n⚠️  Received ${signal}, saving state before exit...`);
-    
+
     // Cancel any pending debounced save
     if (saveTimer) {
         clearTimeout(saveTimer);
         saveTimer = null;
     }
-    
+
     try {
         // Wait for any ongoing save to complete
         let waitCount = 0;
@@ -161,21 +161,21 @@ async function gracefulShutdown(signal) {
             await sleep(100);
             waitCount++;
         }
-        
+
         // Final save with lock
         await doSave();
-        
+
         const p = getProgress();
         console.log(`\n✅ State saved successfully!`);
         console.log(`   Phase 1: ${p.phase1}/${p.total} zipcodes`);
         console.log(`   Phase 2: ${p.plansFilled}/${p.plansFound} plans`);
         console.log(`\n💡 Run again to continue from where you left off.`);
-        
+
     } catch (err) {
         console.error(`❌ Error saving state: ${err.message}`);
         console.log(`   Check ${config.outputDir}/${STATE_FILE}.backup if needed`);
     }
-    
+
     process.exit(0);
 }
 
@@ -191,7 +191,7 @@ async function askUser(question) {
         input: process.stdin,
         output: process.stdout
     });
-    
+
     return new Promise((resolve) => {
         rl.question(question, (answer) => {
             rl.close();
@@ -217,13 +217,13 @@ const timeTracker = {
  */
 function calculateETA(phase, remaining) {
     const times = phase === 1 ? timeTracker.phase1Times : timeTracker.phase2Times;
-    
+
     if (times.length < 3) return 'calculating...';
-    
+
     // Use last 20 items for more accurate recent average
     const recentTimes = times.slice(-20);
     const avgMs = recentTimes.reduce((a, b) => a + b, 0) / recentTimes.length;
-    
+
     const remainingMs = avgMs * remaining;
     return formatDuration(remainingMs);
 }
@@ -235,7 +235,7 @@ function formatDuration(ms) {
     const seconds = Math.floor(ms / 1000);
     const minutes = Math.floor(seconds / 60);
     const hours = Math.floor(minutes / 60);
-    
+
     if (hours > 0) {
         return `${hours}h ${minutes % 60}m`;
     } else if (minutes > 0) {
@@ -350,7 +350,7 @@ async function loadState() {
     const statePath = `${config.outputDir}/${STATE_FILE}`;
     const backupPath = `${statePath}.backup`;
     const jsonPath = `${config.outputDir}/${OUTPUT_JSON}`;
-    
+
     // Try main state file first
     if (existsSync(statePath)) {
         try {
@@ -365,7 +365,7 @@ async function loadState() {
             console.warn(`⚠️ Main state file corrupted: ${err.message}`);
         }
     }
-    
+
     // Try backup state file
     if (existsSync(backupPath)) {
         try {
@@ -381,17 +381,17 @@ async function loadState() {
             console.warn(`⚠️ Backup state also corrupted: ${err.message}`);
         }
     }
-    
+
     // Try to recover from medicare_plans.json
     if (existsSync(jsonPath)) {
         try {
             console.log(`   Trying to recover from ${OUTPUT_JSON}...`);
             const content = await readFile(jsonPath, 'utf-8');
             const plansData = JSON.parse(content);
-            
+
             // Rebuild state from JSON
             let phase1Done = 0, phase2Done = 0, totalPlans = 0, plansFilled = 0;
-            
+
             for (const entry of plansData) {
                 if (entry.status === 'urls_collected' || entry.status === 'completed') {
                     phase1Done++;
@@ -406,7 +406,7 @@ async function loadState() {
                     }
                 }
             }
-            
+
             state = {
                 metadata: {
                     createdAt: new Date().toISOString(),
@@ -421,7 +421,7 @@ async function loadState() {
                 zipcodeOrder: plansData.map(e => e.zipcode),
                 zipcodes: {}
             };
-            
+
             for (const entry of plansData) {
                 state.zipcodes[entry.zipcode] = {
                     index: entry.index,
@@ -439,17 +439,17 @@ async function loadState() {
                     plans: entry.plans || []
                 };
             }
-            
+
             console.log(`✅ Recovered state from ${OUTPUT_JSON}`);
             console.log(`   - Phase 1 (URLs): ${phase1Done}/${plansData.length} zipcodes`);
             console.log(`   - Phase 2 (Details): ${plansFilled}/${totalPlans} plans`);
             return { success: true, recovered: true };
-            
+
         } catch (err) {
             console.warn(`⚠️ Could not recover from JSON: ${err.message}`);
         }
     }
-    
+
     // Nothing found
     return { success: false };
 }
@@ -491,11 +491,11 @@ function initializeState(zipcodes, workers) {
         zipcodeOrder: zipcodes.map(z => z.zipcode),
         zipcodes: {}
     };
-    
+
     zipcodes.forEach((z, index) => {
         state.zipcodes[z.zipcode] = createZipcodeEntry(z, index);
     });
-    
+
     console.log(`\n📋 Initialized fresh state with ${zipcodes.length} zipcodes`);
 }
 
@@ -505,26 +505,26 @@ function initializeState(zipcodes, workers) {
 function mergeState(zipcodes, workers) {
     // Update order from new CSV
     const newOrder = zipcodes.map(z => z.zipcode);
-    
+
     // Keep existing completed data, add new zipcodes
     const existingZipcodes = { ...state.zipcodes };
-    
+
     state.zipcodeOrder = newOrder;
     state.metadata.totalZipcodes = zipcodes.length;
     state.metadata.workers = workers;
-    
+
     // Recount stats
     let phase1Done = 0;
     let phase2Done = 0;
     let totalPlans = 0;
     let filledPlans = 0;
-    
+
     zipcodes.forEach((z, index) => {
         if (existingZipcodes[z.zipcode]) {
             // Keep existing entry but update index
             state.zipcodes[z.zipcode] = existingZipcodes[z.zipcode];
             state.zipcodes[z.zipcode].index = index;
-            
+
             const entry = state.zipcodes[z.zipcode];
             if (entry.status === ZIPCODE_STATUS.URLS_COLLECTED || entry.status === ZIPCODE_STATUS.COMPLETED) {
                 phase1Done++;
@@ -542,12 +542,12 @@ function mergeState(zipcodes, workers) {
             state.zipcodes[z.zipcode] = createZipcodeEntry(z, index);
         }
     });
-    
+
     state.metadata.phase1Completed = phase1Done;
     state.metadata.phase2Completed = phase2Done;
     state.metadata.totalPlansFound = totalPlans;
     state.metadata.totalPlansFilled = filledPlans;
-    
+
     console.log(`\n📋 Merged state: ${phase1Done} URLs collected, ${filledPlans}/${totalPlans} plans detailed`);
 }
 
@@ -564,10 +564,10 @@ function getProgress() {
     const phase2 = state.metadata.phase2Completed;
     const plansFound = state.metadata.totalPlansFound;
     const plansFilled = state.metadata.totalPlansFilled;
-    
+
     const pending = Object.values(state.zipcodes).filter(z => z.status === ZIPCODE_STATUS.PENDING).length;
     const errors = Object.values(state.zipcodes).filter(z => z.status === ZIPCODE_STATUS.ERROR).length;
-    
+
     return {
         total,
         phase1,
@@ -596,7 +596,7 @@ function progressBar(current, total, width = 25) {
  */
 function printProgress(phase, zipcode, action) {
     const p = getProgress();
-    
+
     if (phase === 1) {
         const remaining = p.total - p.phase1;
         const eta = calculateETA(1, remaining);
@@ -606,7 +606,7 @@ function printProgress(phase, zipcode, action) {
         const eta = calculateETA(2, remaining);
         console.log(`\n📋 Phase 2 ${progressBar(p.plansFilled, p.plansFound)} ${p.phase2Pct}% | ${p.plansFilled}/${p.plansFound} details | ⏱️ ETA: ${eta}`);
     }
-    
+
     if (zipcode && action) {
         console.log(`   ${action}: ${zipcode}`);
     }
@@ -625,10 +625,10 @@ async function exportOutputs() {
  */
 async function doExportOutputs() {
     const outputDir = config.outputDir;
-    
+
     // Prepare data in original CSV order
     const orderedEntries = state.zipcodeOrder.map(z => state.zipcodes[z]).filter(Boolean);
-    
+
     // JSON output - full data
     const jsonData = orderedEntries.map(entry => ({
         index: entry.index,
@@ -641,10 +641,10 @@ async function doExportOutputs() {
         error: entry.error,
         plans: entry.plans
     }));
-    
+
     const jsonPath = `${outputDir}/${OUTPUT_JSON}`;
     await atomicWriteFile(jsonPath, JSON.stringify(jsonData, null, 2));
-    
+
     // Summary CSV - one row per zipcode
     const summaryData = orderedEntries.map(entry => ({
         index: entry.index,
@@ -657,10 +657,10 @@ async function doExportOutputs() {
         error: entry.error || '',
         plans_json: JSON.stringify(entry.plans)
     }));
-    
+
     const summaryPath = `${outputDir}/${OUTPUT_CSV_SUMMARY}`;
     await atomicWriteFile(summaryPath, stringify(summaryData, { header: true }));
-    
+
     // Details CSV - one row per plan
     const detailsData = [];
     for (const entry of orderedEntries) {
@@ -704,10 +704,10 @@ async function doExportOutputs() {
             }
         }
     }
-    
+
     const detailsPath = `${outputDir}/${OUTPUT_CSV_PLANS}`;
     await atomicWriteFile(detailsPath, stringify(detailsData, { header: true }));
-    
+
     return { jsonPath, summaryPath, detailsPath };
 }
 
@@ -740,7 +740,7 @@ function parseArgs() {
 async function loadZipcodes() {
     console.log(`📂 Loading zipcodes from: ${config.inputFile}`);
     const fileContent = await readFile(config.inputFile, 'utf-8');
-    
+
     const records = parse(fileContent, {
         delimiter: ';',
         columns: true,
@@ -764,9 +764,9 @@ async function loadZipcodes() {
 // ============================================================================
 
 const DELAYS = {
-    afterPageLoad: 2000,
-    betweenActions: 1000,
-    afterClick: 1500
+    afterPageLoad: 1000,   // Reduced from 2000ms
+    betweenActions: 500,   // Reduced from 1000ms
+    afterClick: 800        // Reduced from 1500ms
 };
 
 async function navigateWizard(page, zipcode) {
@@ -833,9 +833,9 @@ async function navigateWizard(page, zipcode) {
         await sleep(DELAYS.afterPageLoad);
 
         // Step 5: Medicare cost help - select "No"
-        await page.waitForSelector('input[type="checkbox"], input[type="radio"]', { timeout: 10000 }).catch(() => {});
+        await page.waitForSelector('input[type="checkbox"], input[type="radio"]', { timeout: 10000 }).catch(() => { });
         await sleep(1000);
-        
+
         const noHelpSelectors = [
             'input[value="none"]', 'input#none', 'label[for="none"]',
             'input[name="subsidyTypes"][value="none"]', 'input[type="radio"][value="none"]'
@@ -846,7 +846,7 @@ async function navigateWizard(page, zipcode) {
                 if (el && await el.isVisible()) { await el.click(); break; }
             } catch { continue; }
         }
-        
+
         // Fallback: click label with "don't get help"
         try {
             await page.evaluate(() => {
@@ -857,7 +857,7 @@ async function navigateWizard(page, zipcode) {
                     }
                 }
             });
-        } catch {}
+        } catch { }
 
         await sleep(DELAYS.betweenActions);
         await clickContinue(page);
@@ -971,12 +971,12 @@ async function collectPlanUrls(page, zipcodeInfo) {
                 console.log(`  [${zipcodeInfo.zipcode}] Could not go to page ${p}, stopping`);
                 break;
             }
-            await page.waitForSelector(config.selectors.planCards, { timeout: 15000 }).catch(() => {});
+            await page.waitForSelector(config.selectors.planCards, { timeout: 15000 }).catch(() => { });
             await sleep(1000);
         }
 
         const planList = await extractPlanList(page);
-        
+
         for (const plan of planList) {
             const id = plan.planId || `unknown-${p}-${plans.length}`;
             if (!seenIds.has(id)) {
@@ -1005,7 +1005,7 @@ async function fillPlanDetails(page, zipcode, planEntry) {
 
     try {
         await page.goto(planEntry.detailsUrl, { waitUntil: 'domcontentloaded' });
-        await page.waitForSelector('.PlanDetailsPagePlanInfo, .e2e-plan-details-page', { timeout: 15000 }).catch(() => {});
+        await page.waitForSelector('.PlanDetailsPagePlanInfo, .e2e-plan-details-page', { timeout: 15000 }).catch(() => { });
         await sleep(1000);
 
         const details = await extractPlanDetails(page);
@@ -1061,7 +1061,7 @@ async function main() {
 
     // Load or initialize state
     const loadResult = await loadState();
-    
+
     if (options.reset) {
         // User explicitly wants fresh start
         initializeState(zipcodes, options.workers);
@@ -1069,9 +1069,9 @@ async function main() {
         console.log(`\n📁 Fresh start (--reset) - all outputs initialized`);
     } else if (!loadResult.success) {
         // Could not load any state - check if output files exist
-        const hasExistingData = existsSync(`${config.outputDir}/${OUTPUT_JSON}`) || 
-                               existsSync(`${config.outputDir}/${STATE_FILE}`);
-        
+        const hasExistingData = existsSync(`${config.outputDir}/${OUTPUT_JSON}`) ||
+            existsSync(`${config.outputDir}/${STATE_FILE}`);
+
         if (hasExistingData) {
             console.log(`\n❌ ERROR: Could not load state but existing data files found!`);
             console.log(`   This might mean data is corrupted.`);
@@ -1083,7 +1083,7 @@ async function main() {
             console.log(`   python3 -c "import json; d=json.load(open('${config.outputDir}/${OUTPUT_JSON}')); print(len(d), 'zipcodes')"`);
             process.exit(1);
         }
-        
+
         // No existing data, safe to start fresh
         initializeState(zipcodes, options.workers);
         await saveStateImmediate();
@@ -1127,7 +1127,7 @@ async function main() {
 
             async requestHandler({ page, request, log }) {
                 const { zipcode, state: st, city } = request.userData;
-                
+
                 state.zipcodes[zipcode].phase1StartedAt = new Date().toISOString();
                 printProgress(1, zipcode, '🔄 Collecting URLs');
 
@@ -1136,7 +1136,7 @@ async function main() {
                     if (!wizardOk) throw new Error('Wizard navigation failed');
 
                     const plans = await collectPlanUrls(page, { zipcode, state: st, city });
-                    
+
                     // Update state
                     state.zipcodes[zipcode].plans = plans;
                     state.zipcodes[zipcode].totalPlans = plans.length;
@@ -1154,14 +1154,14 @@ async function main() {
 
                 } catch (err) {
                     log.error(`[${zipcode}] Error: ${err.message}`);
-                    
+
                     state.zipcodes[zipcode].status = ZIPCODE_STATUS.ERROR;
                     state.zipcodes[zipcode].error = err.message;
                     state.zipcodes[zipcode].phase1CompletedAt = new Date().toISOString();
                     state.metadata.phase1Completed++;
 
                     errors.push({ zipcode, state: st, city, phase: 1, error: err.message });
-                    
+
                     await saveState();
                     await exportOutputs();
 
@@ -1174,13 +1174,13 @@ async function main() {
 
             async failedRequestHandler({ request }) {
                 const { zipcode, state: st, city } = request.userData;
-                
+
                 state.zipcodes[zipcode].status = ZIPCODE_STATUS.ERROR;
                 state.zipcodes[zipcode].error = 'Max retries exceeded';
                 state.metadata.phase1Completed++;
-                
+
                 errors.push({ zipcode, state: st, city, phase: 1, error: 'Max retries exceeded' });
-                
+
                 await saveState();
                 await exportOutputs();
             }
@@ -1207,7 +1207,7 @@ async function main() {
     for (const zipcode of state.zipcodeOrder) {
         const entry = state.zipcodes[zipcode];
         if (!entry || entry.status === ZIPCODE_STATUS.ERROR || entry.status === ZIPCODE_STATUS.PENDING) continue;
-        
+
         for (let i = 0; i < entry.plans.length; i++) {
             const plan = entry.plans[i];
             if (plan.status === PLAN_STATUS.PENDING) {
@@ -1234,13 +1234,13 @@ async function main() {
 
             async requestHandler({ page, request, log }) {
                 const { zipcode, planIndex, planId } = request.userData;
-                
+
                 const entry = state.zipcodes[zipcode];
                 if (!entry || !entry.plans[planIndex]) return;
 
                 try {
                     await fillPlanDetails(page, zipcode, entry.plans[planIndex]);
-                    
+
                     if (entry.plans[planIndex].status === PLAN_STATUS.COMPLETED) {
                         entry.plansWithDetails++;
                         state.metadata.totalPlansFilled++;
@@ -1264,10 +1264,10 @@ async function main() {
                 } catch (err) {
                     entry.plans[planIndex].status = PLAN_STATUS.ERROR;
                     entry.plans[planIndex].error = err.message;
-                    
+
                     await saveState();
                     await exportOutputs();
-                    
+
                     recordTime(2);  // Track time for ETA even on errors
                 }
 
@@ -1304,7 +1304,7 @@ async function main() {
     // ==========================================================================
     const endTime = Date.now();
     const duration = ((endTime - startTime) / 1000 / 60).toFixed(2);
-    
+
     await saveState();
     const outputPaths = await exportOutputs();
 
@@ -1336,7 +1336,7 @@ async function main() {
 
     console.log('\n' + '═'.repeat(70));
     console.log(`Finished at: ${new Date().toISOString()}`);
-    
+
     if (final.plansFilled < final.plansFound) {
         console.log(`\n💡 TIP: Run again to continue filling remaining ${final.plansFound - final.plansFilled} plans`);
     }
