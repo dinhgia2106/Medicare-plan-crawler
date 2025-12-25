@@ -6,12 +6,14 @@
  *   - ORDER PRESERVED: Maintains CSV order throughout
  *   - INCREMENTAL SAVE: Saves after every change to prevent data loss
  *   - TWO-PHASE: Phase 1 collects all URLs, Phase 2 fills details
+ *   - BUFFERED JSONL: Fast writes using append-only JSONL format
  * 
  * Usage:
- *   node src/parallel.js                    - Run with default 4 workers
+ *   node src/parallel.js                    - Run with default 10 workers
  *   node src/parallel.js --workers 10       - Run with 10 workers
  *   node src/parallel.js --limit 20         - Process first 20 zipcodes only
  *   node src/parallel.js --reset            - Reset and start fresh
+ *   node src/parallel.js --retry-empty      - Retry zipcodes that got 0 plans
  */
 
 import { readFile, writeFile, mkdir, rm, rename, copyFile, appendFile } from 'fs/promises';
@@ -967,7 +969,8 @@ function parseArgs() {
     const options = {
         workers: DEFAULT_WORKERS,
         limit: null,
-        reset: false
+        reset: false,
+        retryEmpty: false  // Retry zipcodes with 0 plans
     };
 
     for (let i = 0; i < args.length; i++) {
@@ -978,6 +981,8 @@ function parseArgs() {
             options.limit = parseInt(args[++i], 10);
         } else if (arg === '--reset' || arg === '-r') {
             options.reset = true;
+        } else if (arg === '--retry-empty' || arg === '-e') {
+            options.retryEmpty = true;
         }
     }
 
@@ -1284,6 +1289,7 @@ async function main() {
     console.log(`   Workers: ${options.workers}`);
     console.log(`   Limit: ${options.limit || 'none'}`);
     console.log(`   Reset: ${options.reset}`);
+    console.log(`   Retry Empty: ${options.retryEmpty}`);
 
     // Ensure output directory exists
     if (!existsSync(config.outputDir)) {
@@ -1352,9 +1358,38 @@ async function main() {
     console.log('─'.repeat(70));
 
     // Get zipcodes that need Phase 1
-    const phase1Pending = state.zipcodeOrder
+    let phase1Pending = state.zipcodeOrder
         .map(z => state.zipcodes[z])
         .filter(z => z && z.status === ZIPCODE_STATUS.PENDING);
+
+    // If --retry-empty is enabled, also include zipcodes with 0 plans
+    if (options.retryEmpty) {
+        const emptyZipcodes = state.zipcodeOrder
+            .map(z => state.zipcodes[z])
+            .filter(z => z &&
+                (z.status === ZIPCODE_STATUS.URLS_COLLECTED || z.status === ZIPCODE_STATUS.COMPLETED) &&
+                z.totalPlans === 0);
+
+        if (emptyZipcodes.length > 0) {
+            console.log(`🔄 Found ${emptyZipcodes.length} zipcodes with 0 plans, resetting for retry...`);
+
+            // Reset these zipcodes to PENDING
+            for (const z of emptyZipcodes) {
+                z.status = ZIPCODE_STATUS.PENDING;
+                z.phase1StartedAt = null;
+                z.phase1CompletedAt = null;
+                z.phase2StartedAt = null;
+                z.phase2CompletedAt = null;
+                z.plans = [];
+                z.error = null;
+                state.metadata.phase1Completed--;
+            }
+
+            // Add to pending list
+            phase1Pending = phase1Pending.concat(emptyZipcodes);
+            console.log(`   Added ${emptyZipcodes.length} zipcodes to retry queue`);
+        }
+    }
 
     if (phase1Pending.length === 0) {
         console.log('✓ All zipcodes already have URLs collected');
