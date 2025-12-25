@@ -14,7 +14,7 @@
  *   node src/parallel.js --reset            - Reset and start fresh
  */
 
-import { readFile, writeFile, mkdir, rm, rename, copyFile } from 'fs/promises';
+import { readFile, writeFile, mkdir, rm, rename, copyFile, appendFile } from 'fs/promises';
 import { parse } from 'csv-parse/sync';
 import { stringify } from 'csv-stringify/sync';
 import { PlaywrightCrawler } from 'crawlee';
@@ -27,9 +27,23 @@ import * as readline from 'readline';
 const DEFAULT_WORKERS = 10;  // Increased for high-performance systems (64GB RAM, RTX 5070 Ti, Ryzen 7500F)
 const STATE_FILE = 'crawler_state.json';
 const OUTPUT_JSON = 'medicare_plans.json';
+const OUTPUT_JSONL = 'medicare_plans.jsonl';  // Append-only format for fast writes
 const OUTPUT_CSV_SUMMARY = 'medicare_plans_summary.csv';
 const OUTPUT_CSV_PLANS = 'medicare_plans_details.csv';
 const CRAWLEE_STORAGE = './storage';
+
+// ============================================================================
+// BUFFERED JSONL WRITING - Dramatically faster than rewriting entire JSON
+// ============================================================================
+
+const BUFFER_FLUSH_SIZE = 100;  // Flush buffer after 100 entries
+const BUFFER_FLUSH_INTERVAL_MS = 5000;  // Also flush every 5 seconds
+
+let jsonlBuffer = [];  // Buffer of zipcode entries to write
+let jsonlBufferTimer = null;
+let dirtyZipcodes = new Set();  // Track which zipcodes have been modified since last full export
+let lastFullExportTime = 0;
+const FULL_EXPORT_INTERVAL_MS = 300000;  // Full JSON export every 5 minutes
 
 // ============================================================================
 // SAFE FILE WRITING & GRACEFUL SHUTDOWN
@@ -102,6 +116,203 @@ async function atomicWriteFile(filePath, content) {
     }
 }
 
+// ============================================================================
+// JSONL BUFFER MANAGEMENT
+// ============================================================================
+
+/**
+ * Mark a zipcode as dirty (needs to be written)
+ */
+function markZipcodeDirty(zipcode) {
+    dirtyZipcodes.add(zipcode);
+
+    // Add to buffer for JSONL writing
+    const entry = state.zipcodes[zipcode];
+    if (entry) {
+        // Check if already in buffer (replace if so)
+        const existingIdx = jsonlBuffer.findIndex(e => e.zipcode === zipcode);
+        if (existingIdx >= 0) {
+            jsonlBuffer[existingIdx] = entry;
+        } else {
+            jsonlBuffer.push(entry);
+        }
+
+        // Schedule flush if buffer is getting full
+        if (jsonlBuffer.length >= BUFFER_FLUSH_SIZE) {
+            flushJsonlBuffer();
+        } else {
+            scheduleBufferFlush();
+        }
+    }
+}
+
+/**
+ * Schedule a buffer flush after interval
+ */
+function scheduleBufferFlush() {
+    if (jsonlBufferTimer) return;
+
+    jsonlBufferTimer = setTimeout(async () => {
+        jsonlBufferTimer = null;
+        await flushJsonlBuffer();
+    }, BUFFER_FLUSH_INTERVAL_MS);
+}
+
+/**
+ * Internal flush - does NOT acquire lock (caller must hold lock)
+ */
+async function _flushJsonlBufferInternal() {
+    if (jsonlBuffer.length === 0) return;
+
+    try {
+        const jsonlPath = `${config.outputDir}/${OUTPUT_JSONL}`;
+
+        // Build JSONL lines to append
+        const lines = jsonlBuffer.map(entry => {
+            const jsonEntry = {
+                index: entry.index,
+                zipcode: entry.zipcode,
+                state: entry.state,
+                city: entry.city,
+                status: entry.status,
+                totalPlans: entry.totalPlans,
+                plansWithDetails: entry.plansWithDetails,
+                error: entry.error,
+                plans: entry.plans,
+                _updatedAt: new Date().toISOString()
+            };
+            return JSON.stringify(jsonEntry);
+        }).join('\n') + '\n';
+
+        // Append to JSONL file (super fast, no rewrite!)
+        await appendFile(jsonlPath, lines, 'utf-8');
+
+        console.log(`📝 Flushed ${jsonlBuffer.length} entries to JSONL`);
+
+        // Clear buffer
+        jsonlBuffer = [];
+
+    } catch (err) {
+        console.error(`❌ JSONL flush error: ${err.message}`);
+    }
+}
+
+/**
+ * Flush the JSONL buffer to disk (with lock - for external callers)
+ */
+async function flushJsonlBuffer() {
+    if (jsonlBuffer.length === 0) return;
+
+    await writeLock.acquire();
+    try {
+        await _flushJsonlBufferInternal();
+    } finally {
+        writeLock.release();
+    }
+}
+
+/**
+ * Rebuild full JSON from JSONL (called periodically or on shutdown)
+ * This reads the JSONL file and consolidates duplicate entries (keeps latest)
+ */
+async function rebuildJsonFromJsonl() {
+    const jsonlPath = `${config.outputDir}/${OUTPUT_JSONL}`;
+
+    if (!existsSync(jsonlPath)) {
+        console.log(`📄 No JSONL file found, using state directly`);
+        return;
+    }
+
+    try {
+        console.log(`🔄 Rebuilding JSON from JSONL...`);
+        const content = await readFile(jsonlPath, 'utf-8');
+        const lines = content.trim().split('\n').filter(l => l.trim());
+
+        // Parse and dedupe (later entries override earlier ones)
+        const entriesMap = new Map();
+        for (const line of lines) {
+            try {
+                const entry = JSON.parse(line);
+                entriesMap.set(entry.zipcode, entry);
+            } catch (e) {
+                // Skip invalid lines
+            }
+        }
+
+        // Update state with JSONL data
+        for (const [zipcode, entry] of entriesMap) {
+            if (state.zipcodes[zipcode]) {
+                // Only update if JSONL entry is newer
+                state.zipcodes[zipcode] = {
+                    ...state.zipcodes[zipcode],
+                    status: entry.status,
+                    totalPlans: entry.totalPlans,
+                    plansWithDetails: entry.plansWithDetails,
+                    error: entry.error,
+                    plans: entry.plans
+                };
+            }
+        }
+
+        console.log(`✅ Rebuilt from ${entriesMap.size} JSONL entries`);
+
+    } catch (err) {
+        console.error(`❌ JSONL rebuild error: ${err.message}`);
+    }
+}
+
+/**
+ * Internal compact - does NOT acquire lock (caller must hold lock)
+ */
+async function _compactJsonlInternal() {
+    const jsonlPath = `${config.outputDir}/${OUTPUT_JSONL}`;
+
+    if (!existsSync(jsonlPath)) return;
+
+    try {
+        console.log(`🗜️ Compacting JSONL file...`);
+        const content = await readFile(jsonlPath, 'utf-8');
+        const lines = content.trim().split('\n').filter(l => l.trim());
+
+        // Parse and dedupe
+        const entriesMap = new Map();
+        for (const line of lines) {
+            try {
+                const entry = JSON.parse(line);
+                entriesMap.set(entry.zipcode, entry);
+            } catch (e) {
+                // Skip invalid lines
+            }
+        }
+
+        // Write compacted file
+        const compactedLines = Array.from(entriesMap.values())
+            .map(e => JSON.stringify(e))
+            .join('\n') + '\n';
+
+        await atomicWriteFile(jsonlPath, compactedLines);
+        console.log(`✅ Compacted to ${entriesMap.size} unique entries`);
+
+    } catch (err) {
+        console.error(`❌ JSONL compact error: ${err.message}`);
+    }
+}
+
+/**
+ * Compact JSONL file - remove duplicates and keep only latest entries (with lock)
+ */
+async function compactJsonl() {
+    const jsonlPath = `${config.outputDir}/${OUTPUT_JSONL}`;
+    if (!existsSync(jsonlPath)) return;
+
+    await writeLock.acquire();
+    try {
+        await _compactJsonlInternal();
+    } finally {
+        writeLock.release();
+    }
+}
+
 /**
  * Debounced save - batches multiple save requests
  */
@@ -116,6 +327,7 @@ function scheduleSave() {
 
 /**
  * Immediate save with lock - ensures only one write at a time
+ * Now uses buffered JSONL writes - much faster!
  */
 async function doSave() {
     if (isShuttingDown) return;
@@ -124,12 +336,23 @@ async function doSave() {
     try {
         isSaving = true;
 
+        // Save state file (small, always fine to rewrite)
         const statePath = `${config.outputDir}/${STATE_FILE}`;
         state.metadata.lastUpdatedAt = new Date().toISOString();
         await atomicWriteFile(statePath, JSON.stringify(state, null, 2));
 
-        // Export outputs
-        await doExportOutputs();
+        // Check if we need a full export (every 5 minutes)
+        const now = Date.now();
+        if (now - lastFullExportTime >= FULL_EXPORT_INTERVAL_MS) {
+            lastFullExportTime = now;
+            console.log(`📊 Performing periodic full export...`);
+            await doExportOutputs();
+
+            // Compact JSONL after full export (use internal version - we already have lock)
+            await _compactJsonlInternal();
+            dirtyZipcodes.clear();
+        }
+        // Otherwise, just flush the buffer (already handled by markZipcodeDirty)
 
     } catch (err) {
         console.error(`❌ Save error: ${err.message}`);
@@ -148,10 +371,14 @@ async function gracefulShutdown(signal) {
 
     console.log(`\n\n⚠️  Received ${signal}, saving state before exit...`);
 
-    // Cancel any pending debounced save
+    // Cancel any pending debounced saves
     if (saveTimer) {
         clearTimeout(saveTimer);
         saveTimer = null;
+    }
+    if (jsonlBufferTimer) {
+        clearTimeout(jsonlBufferTimer);
+        jsonlBufferTimer = null;
     }
 
     try {
@@ -162,8 +389,24 @@ async function gracefulShutdown(signal) {
             waitCount++;
         }
 
-        // Final save with lock
-        await doSave();
+        // Do a full export on shutdown (important!)
+        console.log(`   Performing final full export...`);
+        await writeLock.acquire();
+        try {
+            // Flush any remaining buffer
+            if (jsonlBuffer.length > 0) {
+                console.log(`   Flushing ${jsonlBuffer.length} buffered entries...`);
+                await _flushJsonlBufferInternal();
+            }
+
+            const statePath = `${config.outputDir}/${STATE_FILE}`;
+            state.metadata.lastUpdatedAt = new Date().toISOString();
+            await atomicWriteFile(statePath, JSON.stringify(state, null, 2));
+            await doExportOutputs();
+            await _compactJsonlInternal();
+        } finally {
+            writeLock.release();
+        }
 
         const p = getProgress();
         console.log(`\n✅ State saved successfully!`);
@@ -360,6 +603,10 @@ async function loadState() {
             console.log(`📂 Loaded existing state from ${statePath}`);
             console.log(`   - Phase 1 (URLs): ${state.metadata.phase1Completed}/${state.metadata.totalZipcodes} zipcodes`);
             console.log(`   - Phase 2 (Details): ${state.metadata.totalPlansFilled}/${state.metadata.totalPlansFound} plans`);
+
+            // Also merge any newer data from JSONL (in case of crash between JSONL write and state save)
+            await rebuildJsonFromJsonl();
+
             return { success: true };
         } catch (err) {
             console.warn(`⚠️ Main state file corrupted: ${err.message}`);
@@ -1145,9 +1392,9 @@ async function main() {
                     state.metadata.phase1Completed++;
                     state.metadata.totalPlansFound += plans.length;
 
-                    // SAVE IMMEDIATELY
-                    await saveState();
-                    await exportOutputs();
+                    // Use buffered write instead of full export
+                    markZipcodeDirty(zipcode);
+                    scheduleSave();  // Schedule state file save
 
                     recordTime(1);  // Track time for ETA
                     printProgress(1, zipcode, `✅ Got ${plans.length} plans`);
@@ -1162,8 +1409,9 @@ async function main() {
 
                     errors.push({ zipcode, state: st, city, phase: 1, error: err.message });
 
-                    await saveState();
-                    await exportOutputs();
+                    // Use buffered write
+                    markZipcodeDirty(zipcode);
+                    scheduleSave();
 
                     recordTime(1);  // Track time for ETA even on errors
                     printProgress(1, zipcode, `❌ Error: ${err.message.substring(0, 40)}`);
@@ -1181,8 +1429,9 @@ async function main() {
 
                 errors.push({ zipcode, state: st, city, phase: 1, error: 'Max retries exceeded' });
 
-                await saveState();
-                await exportOutputs();
+                // Use buffered write
+                markZipcodeDirty(zipcode);
+                scheduleSave();
             }
         });
 
@@ -1254,9 +1503,9 @@ async function main() {
                         state.metadata.phase2Completed++;
                     }
 
-                    // SAVE IMMEDIATELY
-                    await saveState();
-                    await exportOutputs();
+                    // Use buffered write instead of full export
+                    markZipcodeDirty(zipcode);
+                    scheduleSave();
 
                     recordTime(2);  // Track time for ETA
                     printProgress(2, zipcode, `✅ Plan ${planIndex + 1}: ${planId}`);
@@ -1265,8 +1514,9 @@ async function main() {
                     entry.plans[planIndex].status = PLAN_STATUS.ERROR;
                     entry.plans[planIndex].error = err.message;
 
-                    await saveState();
-                    await exportOutputs();
+                    // Use buffered write
+                    markZipcodeDirty(zipcode);
+                    scheduleSave();
 
                     recordTime(2);  // Track time for ETA even on errors
                 }
@@ -1280,8 +1530,9 @@ async function main() {
                 if (entry && entry.plans[planIndex]) {
                     entry.plans[planIndex].status = PLAN_STATUS.ERROR;
                     entry.plans[planIndex].error = 'Max retries exceeded';
-                    await saveState();
-                    await exportOutputs();
+                    // Use buffered write
+                    markZipcodeDirty(zipcode);
+                    scheduleSave();
                 }
             }
         });
@@ -1305,8 +1556,24 @@ async function main() {
     const endTime = Date.now();
     const duration = ((endTime - startTime) / 1000 / 60).toFixed(2);
 
-    await saveState();
-    const outputPaths = await exportOutputs();
+    // Flush any remaining buffer and do final full export
+    console.log('\n📝 Performing final export...');
+    await writeLock.acquire();
+    let outputPaths;
+    try {
+        if (jsonlBuffer.length > 0) {
+            await _flushJsonlBufferInternal();
+        }
+
+        const statePath = `${config.outputDir}/${STATE_FILE}`;
+        state.metadata.lastUpdatedAt = new Date().toISOString();
+        await atomicWriteFile(statePath, JSON.stringify(state, null, 2));
+
+        outputPaths = await doExportOutputs();
+        await _compactJsonlInternal();
+    } finally {
+        writeLock.release();
+    }
 
     const final = getProgress();
 
@@ -1327,11 +1594,12 @@ async function main() {
     console.log(`  1. ${outputPaths.jsonPath}`);
     console.log(`  2. ${outputPaths.summaryPath}`);
     console.log(`  3. ${outputPaths.detailsPath}`);
-    console.log(`  4. ${config.outputDir}/${STATE_FILE} (for resume)`);
+    console.log(`  4. ${config.outputDir}/${OUTPUT_JSONL} (append-only log)`);
+    console.log(`  5. ${config.outputDir}/${STATE_FILE} (for resume)`);
 
     if (errors.length > 0) {
         await exportErrors(errors, 'errors.json');
-        console.log(`  5. ${config.outputDir}/errors.json`);
+        console.log(`  6. ${config.outputDir}/errors.json`);
     }
 
     console.log('\n' + '═'.repeat(70));
